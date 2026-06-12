@@ -192,6 +192,7 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
         "machine_start_gcode",
         "filament_start_gcode",
         "change_filament_gcode",
+        "multicolor_method",
         "wipe",
         // BBS
         "wipe_distance",

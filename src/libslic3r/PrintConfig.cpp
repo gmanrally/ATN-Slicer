@@ -5939,6 +5939,16 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionString("G28 ; home all axes\nG1 Z5 F5000 ; lift nozzle\n"));
 
+    // Orca: Creality Print compatibility. Creality's printer profiles and exported 3MF projects
+    // use {if multicolor_method} conditionals in their custom G-code; defining the variable lets
+    // those profiles and projects slice instead of failing with "Not a variable name".
+    def = this->add("multicolor_method", coBool);
+    def->label = L("Multicolor method (Creality Print compatibility)");
+    def->tooltip = L("Compatibility flag used by Creality Print profiles in custom G-code conditionals. "
+                     "Leave off unless your printer uses a Creality multi-color system (CFS).");
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("filament_start_gcode", coStrings);
     def->label = L("Start G-code");
     def->tooltip = L("Start G-code when starting the printing of this filament.");

@@ -1395,6 +1395,9 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionString,              file_start_gcode))
     ((ConfigOptionString,              machine_start_gcode))
     ((ConfigOptionStrings,             filament_start_gcode))
+    // Orca: Creality Print compatibility - their K2/SPARKX profiles and exported
+    // projects reference this variable in custom G-code conditionals.
+    ((ConfigOptionBool,                multicolor_method))
     ((ConfigOptionBool,                single_extruder_multi_material))
     ((ConfigOptionBool,                manual_filament_change))
     ((ConfigOptionBool,                single_extruder_multi_material_priming))
