@@ -789,8 +789,29 @@ void OG_CustomCtrl::CtrlLine::render(wxDC& dc, wxCoord h_pos, wxCoord v_pos)
 
     const std::vector<Option>& option_set = og_line.get_options();
 
+    // Orca/ATN: when one of this line's options is highlighted (parameter search
+    // or the ATN assistant), frame the whole row in red so it is unmissable.
+    bool line_blinking = false;
+    for (const Option& opt : option_set) {
+        Field* f = ctrl->opt_group->get_field(opt.opt_id);
+        if (f && f->blink()) {
+            line_blinking = true;
+            break;
+        }
+    }
+    if (line_blinking) {
+        wxPen   old_pen   = dc.GetPen();
+        wxBrush old_brush = dc.GetBrush();
+        dc.SetPen(wxPen(StateColor::darkModeColorFor(wxColour("#E10600")), 2));
+        dc.SetBrush(*wxTRANSPARENT_BRUSH);
+        dc.DrawRoundedRectangle(ctrl->m_h_gap, v_pos - 2, ctrl->GetSize().GetWidth() - 2 * ctrl->m_h_gap,
+                                this->height - ctrl->m_v_gap + 4, 4);
+        dc.SetPen(old_pen);
+        dc.SetBrush(old_brush);
+    }
+
     wxString label = og_line.label;
-    wxColour blink_color = StateColor::darkModeColorFor("#009688");
+    wxColour blink_color = StateColor::darkModeColorFor("#E10600");
     bool is_url_string = false;
     if (ctrl->opt_group->label_width != 0 && !label.IsEmpty()) {
         const wxColour* text_clr = field ? field->label_color() : og_line.label_color();

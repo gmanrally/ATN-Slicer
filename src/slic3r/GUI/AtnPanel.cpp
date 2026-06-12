@@ -23,7 +23,12 @@ namespace GUI {
 AtnPanel::AtnPanel(wxWindow* parent)
     : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize)
 {
-    std::string url = wxGetApp().app_config->get("atn_panel_url");
+    // URL priority: ATN_PANEL_URL env var (dev override) > app config > bundled page.
+    std::string url;
+    if (const char* env_url = std::getenv("ATN_PANEL_URL"); env_url != nullptr && *env_url != 0)
+        url = env_url;
+    if (url.empty())
+        url = wxGetApp().app_config->get("atn_panel_url");
     if (url.empty())
         url = "file://" + resources_dir() + "/web/atn/index.html";
 
