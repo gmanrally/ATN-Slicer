@@ -1071,6 +1071,7 @@ static std::vector<std::string> s_Preset_print_options{
     "print_sequence",
     "print_order",
     "support_remove_small_overhang",
+    "detect_floating_extrusions",
     "filename_format",
     "outer_wall_filament_id",
     "inner_wall_filament_id",

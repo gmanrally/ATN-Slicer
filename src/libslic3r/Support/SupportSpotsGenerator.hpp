@@ -78,14 +78,27 @@ struct Params
 void estimate_malformations(std::vector<Layer *> &layers, const Params &params);
 
 
-enum class SupportPointCause { 
-    LongBridge, // point generated on bridge and straight perimeter extrusion longer than the allowed length 
+enum class SupportPointCause {
+    LongBridge, // point generated on bridge and straight perimeter extrusion longer than the allowed length
     FloatingBridgeAnchor, // point generated on unsupported bridge endpoint
     FloatingExtrusion, // point generated on extrusion that does not hold on its own
     SeparationFromBed, // point generated for object parts that are connected to the bed, but the area is too small and there is a risk of separation (brim may help)
     UnstableFloatingPart, // point generated for object parts not connected to the bed, holded only by the other support points (brim will not help here)
     WeakObjectPart // point generated when some part of the object is too weak to hold the upper part and may break (imagine hourglass)
     };
+
+struct FloatingExtrusionSpot
+{
+    Vec3f position;        // unscaled coordinates; z is the print_z of the offending layer
+    float unsupported_len; // length [mm] of the continuous unsupported extrusion run ending at position
+};
+using FloatingExtrusionSpots = std::vector<FloatingExtrusionSpot>;
+
+// Detects extrusion paths printed over air: not held by the lower layer extrusions, not above the lower
+// layer interior, and not resting on support material. Unlike the support spots stability analysis (which
+// suggests where supports are needed), this runs after support generation and audits the final toolpaths,
+// catching e.g. overhangs beyond 90 degrees that the support generator missed.
+FloatingExtrusionSpots detect_floating_extrusions(const PrintObject *po, PrintTryCancel cancel_func, const Params &params);
 
 // The support points can be sorted into two groups
 // 1. Local extrusion support for extrusions that are printed in the air and would not

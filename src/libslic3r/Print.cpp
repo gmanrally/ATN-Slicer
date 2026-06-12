@@ -2358,6 +2358,16 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
                     obj->set_done(posDetectOverhangsForLift);
             }
         }
+
+        for (PrintObject* obj : m_objects) {
+            if (need_slicing_objects.count(obj) != 0) {
+                obj->detect_floating_extrusions();
+            }
+            else {
+                if (obj->set_started(posDetectFloatingExtrusions))
+                    obj->set_done(posDetectFloatingExtrusions);
+            }
+        }
     }
     else {
         for (PrintObject *obj : m_objects) {
@@ -2378,6 +2388,8 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
                     obj->set_done(posSupportMaterial);
                 if (obj->set_started(posDetectOverhangsForLift))
                     obj->set_done(posDetectOverhangsForLift);
+                if (obj->set_started(posDetectFloatingExtrusions))
+                    obj->set_done(posDetectFloatingExtrusions);
             }
             else {
                 obj->make_perimeters();
@@ -2386,6 +2398,7 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
                 obj->generate_support_material();
                 obj->detect_overhangs_for_lift();
                 obj->estimate_curled_extrusions();
+                obj->detect_floating_extrusions();
             }
         }
     }

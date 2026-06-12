@@ -953,6 +953,8 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionBool,                support_on_build_plate_only))
     ((ConfigOptionBool,                support_critical_regions_only))
     ((ConfigOptionBool,                support_remove_small_overhang))
+    // Orca: audit final toolpaths for extrusions printed in mid-air
+    ((ConfigOptionBool,                detect_floating_extrusions))
     ((ConfigOptionFloat,               support_top_z_distance))
     ((ConfigOptionFloat,               support_bottom_z_distance))
     ((ConfigOptionInt,                 enforce_support_layers))

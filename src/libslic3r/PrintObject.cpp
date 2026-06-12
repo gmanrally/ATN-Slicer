@@ -26,7 +26,9 @@
 #include "AABBTreeLines.hpp"
 
 #include <cstddef>
+#include <cstdlib>
 #include <float.h>
+#include <fstream>
 #include <iterator>
 #include <mutex>
 #include <string>
@@ -913,6 +915,46 @@ void PrintObject::estimate_curled_extrusions()
     }
 }
 
+void PrintObject::detect_floating_extrusions()
+{
+    if (this->set_started(posDetectFloatingExtrusions)) {
+        if (this->config().detect_floating_extrusions.value) {
+            m_print->set_status(72, L("Detecting floating extrusions"));
+            SupportSpotsGenerator::Params params{this->print()->m_config.filament_type.values,
+                                                 float(this->print()->default_object_config().inner_wall_acceleration.getFloat()),
+                                                 this->config().raft_layers.getInt(), this->config().brim_type.value,
+                                                 float(this->config().brim_width.getFloat())};
+            SupportSpotsGenerator::FloatingExtrusionSpots spots =
+                SupportSpotsGenerator::detect_floating_extrusions(this, m_print->make_try_cancel(), params);
+            m_print->throw_if_canceled();
+
+            // Debugging/automation aid: dump results to a CSV file when requested via environment variable.
+            if (const char *dump_path = std::getenv("ORCA_FLOATING_EXTRUSIONS_DUMP"); dump_path != nullptr && *dump_path != 0) {
+                std::ofstream dump(dump_path, std::ios::app);
+                dump << "object," << this->model_object()->name << ",spots," << spots.size() << "\n";
+                for (const SupportSpotsGenerator::FloatingExtrusionSpot &spot : spots)
+                    dump << spot.position.x() << "," << spot.position.y() << "," << spot.position.z() << "," << spot.unsupported_len
+                         << "\n";
+            }
+
+            if (!spots.empty()) {
+                for (const SupportSpotsGenerator::FloatingExtrusionSpot &spot : spots)
+                    BOOST_LOG_TRIVIAL(debug) << "Floating extrusion at (" << spot.position.x() << ", " << spot.position.y() << ", "
+                                             << spot.position.z() << "), unsupported length " << spot.unsupported_len << " mm";
+                std::string warning_message = Slic3r::format(
+                    L("Object %s has %d extrusion path(s) printed in mid-air with nothing below them (first at z=%.2f mm). "
+                      "They are likely to fail even with supports enabled. Consider re-orienting the object, adding manual "
+                      "supports, or modifying the model."),
+                    this->model_object()->name, int(spots.size()), double(spots.front().position.z()));
+                this->active_step_add_warning(PrintStateBase::WarningLevel::NON_CRITICAL, warning_message,
+                                              PrintStateBase::SlicingFloatingExtrusions);
+                BOOST_LOG_TRIVIAL(warning) << warning_message;
+            }
+        }
+        this->set_done(posDetectFloatingExtrusions);
+    }
+}
+
 void PrintObject::simplify_extrusion_path()
 {
     if (this->set_started(posSimplifyPath)) {
@@ -1165,6 +1207,8 @@ bool PrintObject::invalidate_state_by_config_options(
             if (this->is_mm_painted() && (opt_key == "filter_out_gap_fill" && (opt_key == "gap_infill_speed" && is_gap_fill_changed_state_due_to_speed())))
                 steps.emplace_back(posSlice);
             steps.emplace_back(posPerimeters);
+        } else if (opt_key == "detect_floating_extrusions") {
+            steps.emplace_back(posDetectFloatingExtrusions);
         } else if (
                opt_key == "layer_height"
             || opt_key == "mmu_segmented_region_max_width"
@@ -1473,19 +1517,19 @@ bool PrintObject::invalidate_step(PrintObjectStep step)
 
     // propagate to dependent steps
     if (step == posPerimeters) {
-		invalidated |= this->invalidate_steps({ posPrepareInfill, posInfill, posIroning, posContouring, posSimplifyPath, posSimplifyInfill });
+		invalidated |= this->invalidate_steps({ posPrepareInfill, posInfill, posIroning, posContouring, posSimplifyPath, posSimplifyInfill, posDetectFloatingExtrusions });
         invalidated |= m_print->invalidate_steps({ psSkirtBrim });
     } else if (step == posPrepareInfill) {
-        invalidated |= this->invalidate_steps({ posInfill, posIroning, posContouring, posSimplifyPath, posSimplifyInfill });
+        invalidated |= this->invalidate_steps({ posInfill, posIroning, posContouring, posSimplifyPath, posSimplifyInfill, posDetectFloatingExtrusions });
     } else if (step == posInfill) {
-        invalidated |= this->invalidate_steps({ posIroning, posContouring, posSimplifyInfill });
+        invalidated |= this->invalidate_steps({ posIroning, posContouring, posSimplifyInfill, posDetectFloatingExtrusions });
         invalidated |= m_print->invalidate_steps({ psSkirtBrim });
     } else if (step == posSlice) {
-		invalidated |= this->invalidate_steps({ posPerimeters, posPrepareInfill, posInfill, posIroning, posContouring, posSupportMaterial, posSimplifyPath, posSimplifyInfill });
+		invalidated |= this->invalidate_steps({ posPerimeters, posPrepareInfill, posInfill, posIroning, posContouring, posSupportMaterial, posSimplifyPath, posSimplifyInfill, posDetectFloatingExtrusions });
         invalidated |= m_print->invalidate_steps({ psSkirtBrim });
         m_slicing_params.valid = false;
     } else if (step == posSupportMaterial) {
-        invalidated |= this->invalidate_steps({ posSimplifySupportPath });
+        invalidated |= this->invalidate_steps({ posSimplifySupportPath, posDetectFloatingExtrusions });
         invalidated |= m_print->invalidate_steps({ psSkirtBrim });
         m_slicing_params.valid = false;
     }

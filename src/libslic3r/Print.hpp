@@ -96,6 +96,8 @@ enum PrintObjectStep {
     // BBS
     posDetectOverhangsForLift,
     posSimplifyWall, posSimplifyInfill,
+    // Orca: audit final toolpaths for extrusions printed in mid-air
+    posDetectFloatingExtrusions,
     posCount,
 };
 
@@ -519,6 +521,8 @@ private:
     // BBS
     void detect_overhangs_for_lift();
     void clear_overhangs_for_lift();
+    // Orca
+    void detect_floating_extrusions();
 
    void _transform_hole_to_polyholes();
 

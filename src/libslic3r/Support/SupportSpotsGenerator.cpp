@@ -215,6 +215,99 @@ void estimate_malformations(LayerPtrs &layers, const Params &params)
 #endif
 }
 
+static void append_supporting_lines(const ExtrusionEntityCollection &collection, std::vector<ExtrusionLine> &out)
+{
+    for (const ExtrusionEntity *entity : collection.flatten().entities) {
+        Points pts;
+        entity->collect_points(pts);
+        for (size_t i = 1; i < pts.size(); ++i)
+            out.emplace_back(unscaled(pts[i - 1]).cast<float>(), unscaled(pts[i]).cast<float>());
+    }
+}
+
+FloatingExtrusionSpots detect_floating_extrusions(const PrintObject *po, PrintTryCancel cancel_func, const Params &params)
+{
+    FloatingExtrusionSpots spots;
+    const auto support_layers = po->support_layers();
+
+    for (size_t layer_idx = 1; layer_idx < po->layer_count(); ++layer_idx) {
+        cancel_func();
+        const Layer *layer = po->get_layer(layer_idx);
+        const Layer *lower = layer->lower_layer;
+        if (lower == nullptr)
+            continue;
+
+        std::vector<ExtrusionLine> prev_lines;
+        for (const LayerRegion *region : lower->regions()) {
+            append_supporting_lines(region->perimeters, prev_lines);
+            append_supporting_lines(region->fills, prev_lines);
+        }
+        // Support material whose top surface lies at (or one support z-gap below) the bottom of this layer
+        // also holds its extrusions up.
+        const float bottom_z = float(layer->bottom_z());
+        for (const SupportLayer *support_layer : support_layers) {
+            if (float(support_layer->print_z) > bottom_z + EPSILON)
+                break;
+            if (float(support_layer->print_z) > bottom_z - float(layer->height) - EPSILON)
+                append_supporting_lines(support_layer->support_fills, prev_lines);
+        }
+
+        LD                                   prev_layer_lines{std::move(prev_lines)};
+        AABBTreeLines::LinesDistancer<Linef> prev_layer_boundary{to_unscaled_linesf(lower->lslices)};
+
+        for (const LayerRegion *region : layer->regions()) {
+            auto check_collection = [&](const ExtrusionEntityCollection &collection) {
+                for (const ExtrusionEntity *entity : collection.flatten().entities) {
+                    if (entity->length() < scale_(params.min_distance_to_allow_local_supports))
+                        continue;
+                    const ExtrusionRole role       = entity->role();
+                    const bool          is_bridge  = role == erBridgeInfill || role == erInternalBridgeInfill;
+                    const float         flow_width = get_flow_width(region, role);
+                    auto annotated_points = estimate_points_properties<true, true, false, false>(entity->as_polyline().points,
+                                                                                                 prev_layer_lines, flow_width,
+                                                                                                 params.bridge_distance);
+                    float bridged_distance = 0.0f;
+                    for (size_t i = 0; i < annotated_points.size(); ++i) {
+                        const ExtendedPoint<2> &curr = annotated_points[i];
+                        const ExtendedPoint<2> &prev = i > 0 ? annotated_points[i - 1] : annotated_points[i];
+                        const float line_len = float((prev.position - curr.position).norm());
+
+                        // correctify the distance sign using slice polygons: points above the lower layer interior
+                        // are held by it (sparse infill is considered sufficient anchoring)
+                        const float sign = (prev_layer_boundary.distance_from_lines<true>(curr.position) + 0.5f * flow_width) < 0.0f ?
+                                               -1.0f :
+                                               1.0f;
+                        const float distance = curr.distance * sign;
+
+                        // bridges are designed to span air between anchors; everything else gets an allowance that
+                        // shrinks rapidly with curvature, since curved paths cannot be bridged
+                        const float max_unsupported_len = is_bridge ? params.bridge_distance :
+                                                                      std::max(params.support_points_interface_radius * 2.0f,
+                                                                               params.bridge_distance /
+                                                                                   ((1.0f + std::abs(curr.curvature)) *
+                                                                                    (1.0f + std::abs(curr.curvature)) *
+                                                                                    (1.0f + std::abs(curr.curvature))));
+
+                        if (distance > 1.2f * flow_width) {
+                            bridged_distance += line_len;
+                            if (bridged_distance > max_unsupported_len) {
+                                spots.push_back({Vec3f{float(curr.position.x()), float(curr.position.y()), float(layer->print_z)},
+                                                 bridged_distance});
+                                bridged_distance = 0.0f;
+                            }
+                        } else {
+                            bridged_distance = 0.0f;
+                        }
+                    }
+                }
+            };
+            check_collection(region->perimeters);
+            check_collection(region->fills);
+        }
+    }
+    return spots;
+}
+
 /*
 
 

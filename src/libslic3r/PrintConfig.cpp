@@ -6122,6 +6122,16 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(true));
 
+    // Orca
+    def = this->add("detect_floating_extrusions", coBool);
+    def->label = L("Detect floating extrusions");
+    def->category = L("Support");
+    def->tooltip = L("After slicing, check the final toolpaths for extrusions printed in mid-air with nothing "
+                     "below them - for example overhangs beyond 90 degrees that the support generator cannot "
+                     "catch. A warning is shown when such paths are found. This check does not modify the print.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(true));
+
     // BBS: change type to common float.
     // It may be rounded to mulitple layer height when independent_support_layer_height is false.
     def = this->add("support_top_z_distance", coFloat);
