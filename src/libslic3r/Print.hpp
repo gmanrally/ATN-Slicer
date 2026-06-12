@@ -17,6 +17,7 @@
 #include "GCode/ThumbnailData.hpp"
 #include "GCode/GCodeProcessor.hpp"
 #include "MultiMaterialSegmentation.hpp"
+#include "Support/SupportSpotsGenerator.hpp"
 #include "libslic3r.h"
 
 #include <Eigen/Geometry>
@@ -331,6 +332,10 @@ public:
     const PrintInstances&        instances() const      { return m_instances; }
     PrintInstances &instances() { return m_instances; }
 
+    // Orca: results of the floating extrusion detection step, for preview visualization.
+    // Positions are in object space (add the instance shift for plate coordinates).
+    const SupportSpotsGenerator::FloatingExtrusionSpots& floating_extrusion_spots() const { return m_floating_extrusion_spots; }
+
     // Whoever will get a non-const pointer to PrintObject will be able to modify its layers.
     LayerPtrs&                   layers()               { return m_layers; }
     SupportLayerPtrs&            support_layers()       { return m_support_layers; }
@@ -563,6 +568,8 @@ private:
     SupportLayerPtrs                        m_support_layers;
     // BBS
     std::shared_ptr<TreeSupportData>        m_tree_support_preview_cache;
+    // Orca: filled by detect_floating_extrusions()
+    SupportSpotsGenerator::FloatingExtrusionSpots m_floating_extrusion_spots;
 
     // this is set to true when LayerRegion->slices is split in top/internal/bottom
     // so that next call to make_perimeters() performs a union() before computing loops

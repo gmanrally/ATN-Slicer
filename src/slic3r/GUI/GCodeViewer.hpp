@@ -178,6 +178,9 @@ public:
     GCodeCheckResult  m_gcode_check_result;
     FilamentPrintableResult filament_printable_reuslt;
     Shells            m_shells;
+    // Orca: red markers at floating extrusion spots, in plate coordinates
+    GLModel           m_floating_spots_model;
+    bool              m_floating_spots_visible{ true };
 
 private:
     std::vector<int> m_plater_extruder;
@@ -357,6 +360,9 @@ private:
     //void load_shells(const Print& print);
     void render_toolpaths();
     void render_shells(int canvas_width, int canvas_height);
+    // Orca: floating extrusion spot markers
+    void load_floating_extrusion_spots(const Print& print);
+    void render_floating_extrusion_spots();
 
     //BBS: GUI refactor: add canvas size
     void render_legend(float &legend_height, int canvas_width, int canvas_height, int right_margin);

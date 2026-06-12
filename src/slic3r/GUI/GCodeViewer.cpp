@@ -1483,9 +1483,87 @@ void GCodeViewer::load_as_gcode(const GCodeProcessorResult& gcode_result, const 
     m_gcode_check_result = gcode_result.gcode_check_result;
 
     filament_printable_reuslt = gcode_result.filament_printable_reuslt;
+
+    // Orca: build the floating extrusion spot markers for this plate's print
+    load_floating_extrusion_spots(print);
+
     //BBS: add mutex for protection of gcode result
     gcode_result.unlock();
     wxGetApp().plater()->schedule_background_process();
+}
+
+// Orca: one combined mesh of small octahedron markers, baked in plate coordinates.
+void GCodeViewer::load_floating_extrusion_spots(const Print& print)
+{
+    m_floating_spots_model.reset();
+
+    size_t count = 0;
+    for (const PrintObject* obj : print.objects())
+        count += obj->floating_extrusion_spots().size() * obj->instances().size();
+    if (count == 0)
+        return;
+
+    GLModel::Geometry data;
+    data.format = { GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3N3 };
+    data.reserve_vertices(count * 6);
+    data.reserve_indices(count * 24);
+
+    const float R = 1.2f; // marker half-size (mm)
+    unsigned int base = 0;
+    for (const PrintObject* obj : print.objects()) {
+        for (const PrintInstance& inst : obj->instances()) {
+            const Vec3f shift = unscale(inst.shift.x(), inst.shift.y(), 0.0).cast<float>();
+            for (const SupportSpotsGenerator::FloatingExtrusionSpot& spot : obj->floating_extrusion_spots()) {
+                const Vec3f c = spot.position + shift;
+                data.add_vertex(Vec3f(c.x() + R, c.y(), c.z()), Vec3f(1.0f, 0.0f, 0.0f));
+                data.add_vertex(Vec3f(c.x() - R, c.y(), c.z()), Vec3f(-1.0f, 0.0f, 0.0f));
+                data.add_vertex(Vec3f(c.x(), c.y() + R, c.z()), Vec3f(0.0f, 1.0f, 0.0f));
+                data.add_vertex(Vec3f(c.x(), c.y() - R, c.z()), Vec3f(0.0f, -1.0f, 0.0f));
+                data.add_vertex(Vec3f(c.x(), c.y(), c.z() + R), Vec3f(0.0f, 0.0f, 1.0f));
+                data.add_vertex(Vec3f(c.x(), c.y(), c.z() - R), Vec3f(0.0f, 0.0f, -1.0f));
+                data.add_triangle(base + 0, base + 2, base + 4);
+                data.add_triangle(base + 2, base + 1, base + 4);
+                data.add_triangle(base + 1, base + 3, base + 4);
+                data.add_triangle(base + 3, base + 0, base + 4);
+                data.add_triangle(base + 2, base + 0, base + 5);
+                data.add_triangle(base + 1, base + 2, base + 5);
+                data.add_triangle(base + 3, base + 1, base + 5);
+                data.add_triangle(base + 0, base + 3, base + 5);
+                base += 6;
+            }
+        }
+    }
+
+    m_floating_spots_model.init_from(std::move(data));
+    m_floating_spots_model.set_color({ 0.9f, 0.05f, 0.05f, 0.9f });
+}
+
+void GCodeViewer::render_floating_extrusion_spots()
+{
+    if (!m_floating_spots_visible || !m_floating_spots_model.is_initialized())
+        return;
+
+    GLShaderProgram* shader = wxGetApp().get_shader("gouraud_light");
+    if (shader == nullptr)
+        return;
+
+    glsafe(::glEnable(GL_DEPTH_TEST));
+    glsafe(::glEnable(GL_BLEND));
+    glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
+
+    shader->start_using();
+    shader->set_uniform("emission_factor", 0.5f);
+    const Camera& camera = wxGetApp().plater()->get_camera();
+    const Transform3d& view_matrix = camera.get_view_matrix();
+    shader->set_uniform("view_model_matrix", view_matrix);
+    shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+    const Matrix3d view_normal_matrix = view_matrix.matrix().block(0, 0, 3, 3);
+    shader->set_uniform("view_normal_matrix", view_normal_matrix);
+
+    m_floating_spots_model.render();
+
+    shader->stop_using();
+    glsafe(::glDisable(GL_BLEND));
 }
 
 void GCodeViewer::load_as_preview(libvgcode::GCodeInputData&& data)
@@ -1584,6 +1662,7 @@ void GCodeViewer::render(int canvas_width, int canvas_height, int right_margin)
         return;
 
     render_toolpaths();
+    render_floating_extrusion_spots();
 
     float legend_height = 0.0f;
     render_legend(legend_height, canvas_width, canvas_height, right_margin);

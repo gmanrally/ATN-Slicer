@@ -918,6 +918,7 @@ void PrintObject::estimate_curled_extrusions()
 void PrintObject::detect_floating_extrusions()
 {
     if (this->set_started(posDetectFloatingExtrusions)) {
+        m_floating_extrusion_spots.clear();
         if (this->config().detect_floating_extrusions.value) {
             m_print->set_status(72, L("Detecting floating extrusions"));
             SupportSpotsGenerator::Params params{this->print()->m_config.filament_type.values,
@@ -927,6 +928,7 @@ void PrintObject::detect_floating_extrusions()
             SupportSpotsGenerator::FloatingExtrusionSpots spots =
                 SupportSpotsGenerator::detect_floating_extrusions(this, m_print->make_try_cancel(), params);
             m_print->throw_if_canceled();
+            m_floating_extrusion_spots = spots;
 
             // Debugging/automation aid: dump results to a CSV file when requested via environment variable.
             if (const char *dump_path = std::getenv("ORCA_FLOATING_EXTRUSIONS_DUMP"); dump_path != nullptr && *dump_path != 0) {
