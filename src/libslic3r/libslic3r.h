@@ -2,10 +2,11 @@
 #define _libslic3r_h_
 
 #include "libslic3r_version.h"
-#define SLIC3R_APP_FULL_NAME "Orca Slicer"
-#define GCODEVIEWER_APP_NAME "OrcaSlicer G-code Viewer"
-#define GCODEVIEWER_APP_KEY  "OrcaSlicerGcodeViewer"
-#define GCODEVIEWER_BUILD_ID std::string("OrcaSlicer G-code Viewer-") + std::string(SLIC3R_VERSION) + std::string("-RC")
+// ATN Slicer — Ask The Nozzle's slicer, based on OrcaSlicer (AGPL-3.0)
+#define SLIC3R_APP_FULL_NAME "ATN Slicer"
+#define GCODEVIEWER_APP_NAME "ATN Slicer G-code Viewer"
+#define GCODEVIEWER_APP_KEY  "ATNSlicerGcodeViewer"
+#define GCODEVIEWER_BUILD_ID std::string("ATN Slicer G-code Viewer-") + std::string(SLIC3R_VERSION) + std::string("-RC")
 
 // this needs to be included early for MSVC (listing it in Build.PL is not enough)
 #include <memory>

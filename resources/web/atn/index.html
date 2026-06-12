@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ask The Nozzle</title>
+<style>
+  :root { --atn-red: #e10600; --bg: #0b0d10; --panel: #15181e; --ink: #e8eaed; --muted: #8b939c; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--ink); padding: 24px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h1 span { color: var(--atn-red); }
+  p.sub { color: var(--muted); margin: 0 0 20px; font-size: 14px; }
+  .row { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  button { background: var(--atn-red); border: 0; color: #fff; padding: 9px 16px; border-radius: 6px; font-size: 14px; cursor: pointer; }
+  button.ghost { background: var(--panel); border: 1px solid #2a2f37; }
+  input { background: var(--panel); border: 1px solid #2a2f37; color: var(--ink); padding: 8px 10px; border-radius: 6px; font-size: 14px; }
+  pre { background: var(--panel); border: 1px solid #2a2f37; border-radius: 8px; padding: 14px; font-size: 12px;
+        max-height: 50vh; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+  .note { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1>Ask The Nozzle <span>· bridge test page</span></h1>
+  <p class="sub">This local page ships with ATN Slicer as the assistant placeholder. Point <code>atn_panel_url</code> at
+  https://askthenozzle.com/slicer for the live assistant. The buttons below exercise the slicer bridge.</p>
+
+  <div class="row">
+    <button onclick="getContext()">Get slicer context</button>
+    <button class="ghost" onclick="highlight()">Highlight setting</button>
+    <input id="key" value="sparse_infill_density" size="22">
+    <input id="value" value="25%" size="8">
+    <button class="ghost" onclick="setSetting()">Set value</button>
+  </div>
+
+  <pre id="out">Replies from the slicer appear here.</pre>
+  <p class="note">Bridge: page → slicer via window.wx.postMessage(JSON); slicer → page via window.postMessage.</p>
+
+<script>
+  const out = document.getElementById('out');
+  function show(obj) { out.textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2); }
+  function send(msg) {
+    if (window.wx && window.wx.postMessage) window.wx.postMessage(JSON.stringify(msg));
+    else show('Bridge unavailable: window.wx.postMessage not found (page not running inside ATN Slicer?)');
+  }
+  function getContext() { send({ command: 'atn_get_context' }); }
+  function highlight() { send({ command: 'atn_highlight_setting', data: { key: document.getElementById('key').value } }); }
+  function setSetting() { send({ command: 'atn_set_setting', data: { key: document.getElementById('key').value,
+                                                                     value: document.getElementById('value').value } }); }
+  window.addEventListener('message', (e) => {
+    if (e.data && e.data.command && String(e.data.command).startsWith('atn_')) {
+      if (e.data.command === 'atn_context' && e.data.data && e.data.data.config) {
+        const d = e.data.data;
+        show({ command: 'atn_context', app: d.app, printer_preset: d.printer_preset, print_preset: d.print_preset,
+               filament_presets: d.filament_presets, modified: d.modified, objects: d.objects,
+               floating_extrusions: (d.floating_extrusions || []).length + ' spots',
+               config: Object.keys(d.config).length + ' settings (omitted)' });
+      } else {
+        show(e.data);
+      }
+    }
+  });
+</script>
+</body>
+</html>

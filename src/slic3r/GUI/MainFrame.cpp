@@ -1352,6 +1352,11 @@ void MainFrame::init_tabpanel() {
     m_calibration->SetBackgroundColour(*wxWHITE);
     m_tabpanel->AddPage(m_calibration, _L("Calibration"), std::string("tab_calibration_active"), std::string("tab_calibration_active"), false);
 
+    // Orca/ATN: Ask The Nozzle assistant panel
+    m_atn_panel = new AtnPanel(m_tabpanel);
+    m_atn_panel->SetBackgroundColour(*wxWHITE);
+    m_tabpanel->AddPage(m_atn_panel, _L("ATN"), std::string("tab_monitor_active"), std::string("tab_monitor_active"), false);
+
     if (m_plater) {
         // load initial config
         auto full_config = wxGetApp().preset_bundle->full_config();
