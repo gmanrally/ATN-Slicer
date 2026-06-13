@@ -28,6 +28,7 @@ private:
     std::string build_context_json() const;
     void        handle_highlight_setting(const std::string& key);
     void        handle_set_setting(const std::string& key, const std::string& value);
+    void        handle_request_preflight();
 
     wxWebView* m_browser{ nullptr };
 };

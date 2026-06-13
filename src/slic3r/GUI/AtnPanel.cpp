@@ -3,6 +3,7 @@
 #include "GUI.hpp"
 #include "GUI_App.hpp"
 #include "MainFrame.hpp"
+#include "PartPlate.hpp"
 #include "Plater.hpp"
 #include "Tab.hpp"
 #include "Widgets/WebView.hpp"
@@ -11,7 +12,11 @@
 #include "libslic3r/Print.hpp"
 
 #include <boost/log/trivial.hpp>
+#include <boost/filesystem.hpp>
+#include <boost/nowide/fstream.hpp>
 #include <nlohmann/json.hpp>
+#include <sstream>
+#include <wx/base64.h>
 #include <wx/sizer.h>
 #include <wx/webview.h>
 
@@ -23,14 +28,14 @@ namespace GUI {
 AtnPanel::AtnPanel(wxWindow* parent)
     : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize)
 {
-    // URL priority: ATN_PANEL_URL env var (dev override) > app config > bundled page.
+    // URL priority: ATN_PANEL_URL env var (dev override) > app config > hosted assistant.
     std::string url;
     if (const char* env_url = std::getenv("ATN_PANEL_URL"); env_url != nullptr && *env_url != 0)
         url = env_url;
     if (url.empty())
         url = wxGetApp().app_config->get("atn_panel_url");
     if (url.empty())
-        url = "file://" + resources_dir() + "/web/atn/index.html";
+        url = "https://askthenozzle.com/slicer/assistant";
 
     wxBoxSizer* sizer = new wxBoxSizer(wxVERTICAL);
     m_browser = WebView::CreateWebView(this, from_u8(url));
@@ -77,6 +82,8 @@ void AtnPanel::on_script_message(wxWebViewEvent& evt)
             handle_highlight_setting(root["data"]["key"].get<std::string>());
         } else if (command == "atn_set_setting") {
             handle_set_setting(root["data"]["key"].get<std::string>(), root["data"]["value"].get<std::string>());
+        } else if (command == "atn_request_preflight") {
+            handle_request_preflight();
         } else {
             // Unknown to us - let the app-wide handler have a go.
             wxGetApp().handle_web_request(message);
@@ -163,6 +170,24 @@ void AtnPanel::handle_highlight_setting(const std::string& key)
     wxGetApp().sidebar().jump_to_option(key, type, L"");
 }
 
+// Returns the edited config that owns this key, or nullptr if no preset defines it.
+static const DynamicPrintConfig* config_for_key(const PresetBundle& bundle, const std::string& key, Preset::Type& type_out)
+{
+    if (bundle.prints.get_edited_preset().config.has(key)) {
+        type_out = Preset::TYPE_PRINT;
+        return &bundle.prints.get_edited_preset().config;
+    }
+    if (bundle.filaments.get_edited_preset().config.has(key)) {
+        type_out = Preset::TYPE_FILAMENT;
+        return &bundle.filaments.get_edited_preset().config;
+    }
+    if (bundle.printers.get_edited_preset().config.has(key)) {
+        type_out = Preset::TYPE_PRINTER;
+        return &bundle.printers.get_edited_preset().config;
+    }
+    return nullptr;
+}
+
 void AtnPanel::handle_set_setting(const std::string& key, const std::string& value)
 {
     json reply;
@@ -171,13 +196,8 @@ void AtnPanel::handle_set_setting(const std::string& key, const std::string& val
 
     const PresetBundle& bundle = *wxGetApp().preset_bundle;
     Preset::Type type;
-    if (bundle.prints.get_edited_preset().config.has(key))
-        type = Preset::TYPE_PRINT;
-    else if (bundle.filaments.get_edited_preset().config.has(key))
-        type = Preset::TYPE_FILAMENT;
-    else if (bundle.printers.get_edited_preset().config.has(key))
-        type = Preset::TYPE_PRINTER;
-    else {
+    const DynamicPrintConfig* cfg = config_for_key(bundle, key, type);
+    if (cfg == nullptr) {
         reply["data"]["ok"]      = false;
         reply["data"]["message"] = "unknown setting: " + key;
         send_to_page(reply.dump());
@@ -195,16 +215,69 @@ void AtnPanel::handle_set_setting(const std::string& key, const std::string& val
         return;
     }
 
+    const std::string before = cfg->opt_serialize(key);
+
     // Apply through the Tab so the field updates, the preset is marked
     // modified, and slicing state is invalidated - same as a manual edit.
     wxGetApp().get_tab(type)->load_config(delta);
 
-    // Show the user what changed.
-    wxGetApp().mainframe->select_tab(size_t(MainFrame::tp3DEditor));
-    wxGetApp().sidebar().jump_to_option(key, type, L"");
+    const std::string after   = cfg->opt_serialize(key);
+    const bool        changed = (before != after);
 
-    reply["data"]["ok"]    = true;
-    reply["data"]["value"] = delta.opt_serialize(key);
+    // Only pull the view to the option when we actually changed it, so applying
+    // a batch of recommendations where most are already correct doesn't yank the
+    // editor around (and doesn't reset the highlighter off the one that changed).
+    if (changed) {
+        wxGetApp().mainframe->select_tab(size_t(MainFrame::tp3DEditor));
+        wxGetApp().sidebar().jump_to_option(key, type, L"");
+    }
+
+    reply["data"]["ok"]       = true;
+    reply["data"]["changed"]  = changed;
+    reply["data"]["value"]    = after;
+    reply["data"]["previous"] = before;
+    send_to_page(reply.dump());
+}
+
+void AtnPanel::handle_request_preflight()
+{
+    json reply;
+    reply["command"] = "atn_gcode";
+
+    PartPlate* plate = wxGetApp().plater()->get_partplate_list().get_curr_plate();
+    if (plate == nullptr || !plate->is_slice_result_valid() || plate->get_slice_result() == nullptr) {
+        reply["data"]["ok"]      = false;
+        reply["data"]["message"] = "The current plate isn't sliced yet - slice it first, then run the report.";
+        send_to_page(reply.dump());
+        return;
+    }
+
+    const std::string path = plate->get_slice_result()->filename;
+    if (path.empty() || !boost::filesystem::exists(path)) {
+        reply["data"]["ok"]      = false;
+        reply["data"]["message"] = "Sliced G-code file not found on disk.";
+        send_to_page(reply.dump());
+        return;
+    }
+
+    // Cap the size: the server's geometry walk also tops out around 50 MB, and a
+    // very large base64 string is heavy to push across the webview bridge.
+    const std::uintmax_t size = boost::filesystem::file_size(path);
+    if (size > 40ull * 1024 * 1024) {
+        reply["data"]["ok"]      = false;
+        reply["data"]["message"] = "This G-code is too large for the in-app pre-flight; use the askthenozzle.com tool instead.";
+        send_to_page(reply.dump());
+        return;
+    }
+
+    boost::nowide::ifstream in(path, std::ios::binary);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    const std::string bytes = ss.str();
+
+    reply["data"]["ok"]   = true;
+    reply["data"]["name"] = boost::filesystem::path(path).filename().string();
+    reply["data"]["b64"]  = wxBase64Encode(bytes.data(), bytes.size()).ToStdString();
     send_to_page(reply.dump());
 }
 
