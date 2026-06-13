@@ -10,6 +10,7 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Print.hpp"
+#include "libslic3r/miniz_extension.hpp"
 
 #include <boost/log/trivial.hpp>
 #include <boost/filesystem.hpp>
@@ -260,10 +261,11 @@ void AtnPanel::handle_request_preflight()
         return;
     }
 
-    // Cap the size: the server's geometry walk also tops out around 50 MB, and a
-    // very large base64 string is heavy to push across the webview bridge.
+    // Generous cap: the gcode is deflate-compressed before crossing the bridge
+    // (gcode is ~10x compressible), so even large manifolds stay small. The
+    // server independently skips its geometry walk above ~50 MB decompressed.
     const std::uintmax_t size = boost::filesystem::file_size(path);
-    if (size > 40ull * 1024 * 1024) {
+    if (size > 250ull * 1024 * 1024) {
         reply["data"]["ok"]      = false;
         reply["data"]["message"] = "This G-code is too large for the in-app pre-flight; use the askthenozzle.com tool instead.";
         send_to_page(reply.dump());
@@ -275,9 +277,24 @@ void AtnPanel::handle_request_preflight()
     ss << in.rdbuf();
     const std::string bytes = ss.str();
 
+    // Deflate (zlib format) so DecompressionStream('deflate') in the panel can
+    // inflate it natively, then upload the raw gcode to the shared preflight.
+    mz_ulong bound = mz_compressBound((mz_ulong)bytes.size());
+    std::vector<unsigned char> comp(bound);
+    const int rc = mz_compress2(comp.data(), &bound,
+                                reinterpret_cast<const unsigned char*>(bytes.data()),
+                                (mz_ulong)bytes.size(), MZ_BEST_SPEED);
     reply["data"]["ok"]   = true;
     reply["data"]["name"] = boost::filesystem::path(path).filename().string();
-    reply["data"]["b64"]  = wxBase64Encode(bytes.data(), bytes.size()).ToStdString();
+    if (rc == MZ_OK) {
+        comp.resize(bound);
+        reply["data"]["enc"] = "deflate";
+        reply["data"]["b64"] = wxBase64Encode(comp.data(), comp.size()).ToStdString();
+    } else {
+        // Compression failed for some reason - fall back to raw bytes.
+        reply["data"]["enc"] = "raw";
+        reply["data"]["b64"] = wxBase64Encode(bytes.data(), bytes.size()).ToStdString();
+    }
     send_to_page(reply.dump());
 }
 
