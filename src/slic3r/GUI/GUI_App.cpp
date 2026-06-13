@@ -302,12 +302,21 @@ public:
 
         scale_font(m_font_version, 1.65f); // only scale this one since it hasnt a preloaded font like Label::Body_24;
 
-        m_bg_color = StateColor::darkModeColorFor(wxColour("#FFFFFF"));
-        m_fg_color = StateColor::darkModeColorFor(wxColour("#6B6A6A"));
-        bool dark_mode = m_fg_color != wxColour("#6B6A6A");
+        bool dark_mode = StateColor::darkModeColorFor(wxColour("#6B6A6A")) != wxColour("#6B6A6A");
         wxSize sz  = m_window->GetClientSize();
-        BitmapCache bmp_cache;
-        m_logo_bmp = *bmp_cache.load_svg(dark_mode ? "splash_logo_dark" : "splash_logo", sz.GetWidth(), sz.GetHeight());
+
+        // ATN: branded teal splash (PNG, real wordmark). The version + loading
+        // text is painted over the lower band, so use a light foreground.
+        m_bg_color = wxColour("#0a8c8c");
+        m_fg_color = wxColour("#cfe6e3");
+        wxImage splash_img;
+        if (splash_img.LoadFile(from_u8(Slic3r::var("splash_atn.png")), wxBITMAP_TYPE_PNG) && splash_img.IsOk()) {
+            splash_img.Rescale(sz.GetWidth(), sz.GetHeight(), wxIMAGE_QUALITY_HIGH);
+            m_logo_bmp = wxBitmap(splash_img);
+        } else {
+            BitmapCache bmp_cache;
+            m_logo_bmp = *bmp_cache.load_svg(dark_mode ? "splash_logo_dark" : "splash_logo", sz.GetWidth(), sz.GetHeight());
+        }
 
         m_window->Bind(wxEVT_PAINT, &SplashScreen::OnPaint, this);
         m_window->Refresh();
