@@ -40,7 +40,8 @@ using namespace nlohmann;
 
 namespace Slic3r {
 
-static const std::string VERSION_CHECK_URL = "https://check-version.orcaslicer.com/latest";
+// ATN Slicer hosts its own app-update feed; profile updates still come from Orca.
+static const std::string VERSION_CHECK_URL = "https://askthenozzle.com/api/slicer/latest";
 static const std::string PROFILE_UPDATE_URL = "https://check-version.orcaslicer.com/profile";
 static const std::string MODELS_STR = "models";
 
