@@ -15840,6 +15840,12 @@ bool Plater::apply_optimized_gcode()
         // so the externally optimized gcode is kept rather than re-sliced away.
         print->export_gcode_from_previous_file(plate->get_tmp_gcode_path(), result, nullptr);
         p->preview->update_gcode_result(result);
+        // Drop the gcode viewer's cached toolpaths so the re-processed result is
+        // fully rebuilt (legend time + speed colours). Otherwise the same-id
+        // short-circuit in GCodeViewer::load_as_gcode re-sets only the tool
+        // colours and returns, leaving the displayed time and paths frozen.
+        if (p->preview->get_canvas3d())
+            p->preview->get_canvas3d()->reset_gcode_toolpaths();
         // only_gcode=true: load the gcode preview straight from the (updated)
         // result, bypassing the is_slice_result_valid() gate in load_print_as_fff
         // so the optimized gcode actually re-renders.
