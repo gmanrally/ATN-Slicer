@@ -35,6 +35,7 @@ private:
     void        handle_highlight_setting(const std::string& key);
     void        handle_set_setting(const std::string& key, const std::string& value);
     void        handle_request_preflight();
+    void        handle_capture_model();
 
     wxWebView* m_browser{ nullptr };
 };

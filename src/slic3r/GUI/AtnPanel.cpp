@@ -2,6 +2,8 @@
 
 #include "GUI.hpp"
 #include "GUI_App.hpp"
+#include "GLCanvas3D.hpp"
+#include "Camera.hpp"
 #include "MainFrame.hpp"
 #include "PartPlate.hpp"
 #include "Plater.hpp"
@@ -10,6 +12,8 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Print.hpp"
+#include "libslic3r/GCode/ThumbnailData.hpp"
+#include "libslic3r/GCode/Thumbnails.hpp"
 #include "libslic3r/miniz_extension.hpp"
 
 #include <boost/log/trivial.hpp>
@@ -100,6 +104,8 @@ void AtnPanel::on_script_message(wxWebViewEvent& evt)
             handle_set_setting(root["data"]["key"].get<std::string>(), root["data"]["value"].get<std::string>());
         } else if (command == "atn_request_preflight") {
             handle_request_preflight();
+        } else if (command == "atn_capture_model") {
+            handle_capture_model();
         } else {
             // Unknown to us - let the app-wide handler have a go.
             wxGetApp().handle_web_request(message);
@@ -310,6 +316,42 @@ void AtnPanel::handle_request_preflight()
         reply["data"]["enc"] = "raw";
         reply["data"]["b64"] = wxBase64Encode(bytes.data(), bytes.size()).ToStdString();
     }
+    send_to_page(reply.dump());
+}
+
+void AtnPanel::handle_capture_model()
+{
+    json reply;
+    reply["command"] = "atn_model_images";
+
+    Plater*     plater = wxGetApp().plater();
+    GLCanvas3D* canvas = plater ? plater->get_view3D_canvas3D() : nullptr;
+    if (canvas == nullptr || wxGetApp().model().objects.empty()) {
+        reply["data"]["ok"] = false;
+        send_to_page(reply.dump());
+        return;
+    }
+
+    PartPlateList& plates = plater->get_partplate_list();
+    // sizes, printable_only, parts_only, show_bed, transparent_background, plate_id
+    ThumbnailsParams params{ Vec2ds{}, false, false, true, false, plates.get_curr_plate_index() };
+    const unsigned int W = 512, H = 512;
+
+    json images = json::array();
+    auto capture = [&](Camera::ViewAngleType view) {
+        ThumbnailData data;
+        canvas->render_thumbnail(data, W, H, params, Camera::EType::Ortho, view, false, false);
+        if (!data.is_valid())
+            return;
+        auto png = Slic3r::GCodeThumbnails::compress_thumbnail(data, GCodeThumbnailsFormat::PNG);
+        if (png && png->data != nullptr && png->size > 0)
+            images.push_back(wxBase64Encode(png->data, png->size).ToStdString());
+    };
+    capture(Camera::ViewAngleType::Iso);
+    capture(Camera::ViewAngleType::Top_Plate);
+
+    reply["data"]["ok"]     = !images.empty();
+    reply["data"]["images"] = images;
     send_to_page(reply.dump());
 }
 

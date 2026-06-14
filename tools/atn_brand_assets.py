@@ -35,6 +35,29 @@ def make_icons():
         print("wrote", name)
 
 
+def make_window_pngs():
+    """The window icon fallback and every in-app dialog/popup logo load these
+    PNGs by name at runtime — replace them so no Orca mark survives in dialogs."""
+    src = Image.open(ATN_ICON).convert("RGBA")
+
+    # Solid teal-tile variants (window icon + dialog logos).
+    for name, size in [("OrcaSlicer_128px.png", 128), ("OrcaSlicer_192px.png", 192),
+                       ("OrcaSlicer-gcodeviewer_192px.png", 192)]:
+        src.resize((size, size), Image.LANCZOS).save(IMAGES / name)
+        print("wrote", name)
+
+    # Grayscale (MsgDialog logo).
+    gray = src.convert("L").convert("RGBA").resize((192, 192), Image.LANCZOS)
+    gray.save(IMAGES / "OrcaSlicer_192px_grayscale.png")
+    print("wrote OrcaSlicer_192px_grayscale.png")
+
+    # Transparent watermark (ConfigWizard background): teal nozzle, no tile.
+    tp = Image.new("RGBA", (192, 192), (0, 0, 0, 0))
+    _draw_nozzle(ImageDraw.Draw(tp), cx=96, cy=78, scale=3.4, colour=(11, 110, 110, 255))
+    tp.save(IMAGES / "OrcaSlicer_192px_transparent.png")
+    print("wrote OrcaSlicer_192px_transparent.png")
+
+
 def _draw_nozzle(d, cx, cy, scale, colour):
     """White nozzle mark (favicon geometry) centred at (cx, cy)."""
     def P(x, y):  # favicon 32-space -> splash space, nozzle centred on (16, 16.75)
@@ -75,4 +98,5 @@ def make_splash():
 
 if __name__ == "__main__":
     make_icons()
+    make_window_pngs()
     make_splash()
