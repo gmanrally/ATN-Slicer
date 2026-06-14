@@ -386,7 +386,6 @@ public:
     ProjectPanel*         m_project{ nullptr };
 
     CalibrationPanel*     m_calibration{ nullptr };
-    AtnPanel*             m_atn_panel{ nullptr };
     WebViewPanel*         m_webview { nullptr };
     PrinterWebView*       m_printer_view{nullptr};
     wxLogWindow*          m_log_window { nullptr };

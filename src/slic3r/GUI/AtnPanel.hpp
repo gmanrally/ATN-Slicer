@@ -21,6 +21,12 @@ public:
 
     void load_url(const wxString& url);
 
+    // Orca/ATN: tell the embedded page which workflow mode to show
+    // ("prepare" = pre-slice questions, "preview" = post-slice report + chat).
+    void set_mode(const std::string& mode);
+    // Fired when a slice finishes successfully: the page auto-runs pre-flight.
+    void on_slice_complete();
+
 private:
     void on_script_message(wxWebViewEvent& evt);
     void send_to_page(const std::string& json_payload);

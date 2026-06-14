@@ -56,6 +56,21 @@ void AtnPanel::load_url(const wxString& url)
         m_browser->LoadURL(url);
 }
 
+void AtnPanel::set_mode(const std::string& mode)
+{
+    json msg;
+    msg["command"]      = "atn_mode";
+    msg["data"]["mode"] = mode;
+    send_to_page(msg.dump());
+}
+
+void AtnPanel::on_slice_complete()
+{
+    json msg;
+    msg["command"] = "atn_slice_complete";
+    send_to_page(msg.dump());
+}
+
 void AtnPanel::send_to_page(const std::string& json_payload)
 {
     if (m_browser != nullptr)

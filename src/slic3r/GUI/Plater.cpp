@@ -84,6 +84,7 @@
 #include "wxExtensions.hpp"
 #include "../Utils/PrintHost.hpp"
 #include "MainFrame.hpp"
+#include "AtnPanel.hpp"
 #include "format.hpp"
 #include "3DScene.hpp"
 #include "GLCanvas3D.hpp"
@@ -4271,6 +4272,7 @@ struct Plater::priv
     // PIMPL back pointer ("Q-Pointer")
     Plater *q;
     Sidebar *  sidebar;
+    AtnPanel * atn_panel { nullptr };   // Orca/ATN: docked assistant (Prepare + Preview)
     MainFrame *main_frame;
 
     MenuFactory menus;
@@ -4958,6 +4960,9 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
 
     assemble_view = new AssembleView(panel_3d, bed, &model, config, &background_process);
 
+    // Orca/ATN: the Ask The Nozzle assistant, docked beside the scene.
+    atn_panel = new AtnPanel(q);
+
 #ifdef __APPLE__
     // BBS
     // set default view_toolbar icons size equal to GLGizmosManager::Default_Icons_Size
@@ -4994,6 +4999,17 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
                                    .BottomDockable(false)
                                    .BestSize(wxSize(39 * wxGetApp().em_unit(), 90 * wxGetApp().em_unit())));
 
+    // Orca/ATN: dock the assistant on the left, collapsible, shown in Prepare + Preview.
+    m_aui_mgr.AddPane(atn_panel, wxAuiPaneInfo()
+                                   .Name("atn_panel")
+                                   .Caption("Ask The Nozzle")
+                                   .Left()
+                                   .CloseButton(false)
+                                   .MaximizeButton(false)
+                                   .TopDockable(false)
+                                   .BottomDockable(false)
+                                   .BestSize(wxSize(34 * wxGetApp().em_unit(), 90 * wxGetApp().em_unit())));
+
     auto* panel_sizer = new wxBoxSizer(wxHORIZONTAL);
     panel_sizer->Add(view3D, 1, wxEXPAND | wxALL, 0);
     panel_sizer->Add(preview, 1, wxEXPAND | wxALL, 0);
@@ -5024,6 +5040,15 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
             }
 
             sidebar_layout.is_collapsed = !sidebar.IsShown();
+
+            // Orca/ATN: saved layouts from before the ATN pane existed don't
+            // mention it, so LoadPerspective leaves it unplaced. Re-dock it left
+            // so existing users still get the assistant without resetting layout.
+            if (layout.Find("atn_panel") == wxNOT_FOUND) {
+                auto& ap = m_aui_mgr.GetPane(atn_panel);
+                if (ap.IsOk())
+                    ap.Left().Show();
+            }
         }
 
         // Keep tracking the current sidebar size, by storing it using `best_size`, which will be stored
@@ -9204,6 +9229,21 @@ void Plater::priv::set_current_panel(wxPanel* panel, bool no_slice)
 
     update_sidebar(true);
 
+    // Orca/ATN: show the assistant in Prepare + Preview (not Assemble) and tell
+    // it which mode it's in so it shows pre-slice questions vs the post-slice report.
+    if (atn_panel) {
+        auto& pane = m_aui_mgr.GetPane(atn_panel);
+        if (pane.IsOk()) {
+            const bool show = (current_panel == view3D || current_panel == preview);
+            if (pane.IsShown() != show) {
+                pane.Show(show);
+                m_aui_mgr.Update();
+            }
+            if (show)
+                atn_panel->set_mode(current_panel == preview ? "preview" : "prepare");
+        }
+    }
+
     if (wxGetApp().plater()) {
         Camera& cam = wxGetApp().plater()->get_camera();
         if (old_panel == preview || old_panel == view3D) {
@@ -9997,6 +10037,9 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(":finished, reload print soon");
         m_is_slicing = false;
         this->preview->reload_print(false);
+        // Orca/ATN: fire the pre-flight analysis automatically on a successful slice.
+        if (evt.success() && atn_panel)
+            atn_panel->on_slice_complete();
         /* BBS if in publishing progress */
         if (m_is_publishing) {
             if (m_publish_dlg && !m_publish_dlg->was_cancelled()) {

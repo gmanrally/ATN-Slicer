@@ -1352,10 +1352,8 @@ void MainFrame::init_tabpanel() {
     m_calibration->SetBackgroundColour(*wxWHITE);
     m_tabpanel->AddPage(m_calibration, _L("Calibration"), std::string("tab_calibration_active"), std::string("tab_calibration_active"), false);
 
-    // Orca/ATN: Ask The Nozzle assistant panel (own teal-nozzle tab icon)
-    m_atn_panel = new AtnPanel(m_tabpanel);
-    m_atn_panel->SetBackgroundColour(wxColour("#0b6e6e"));
-    m_tabpanel->AddPage(m_atn_panel, _L("ATN"), std::string("tab_atn_active"), std::string("tab_atn_active"), false);
+    // Orca/ATN: the Ask The Nozzle assistant is now docked beside the scene in
+    // the Prepare/Preview editor (see Plater), not a standalone tab.
 
     if (m_plater) {
         // load initial config
