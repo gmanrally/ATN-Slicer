@@ -170,6 +170,28 @@ void OrientJob::process(Ctl &ctl)
         params.min_volume = true;
     }
 
+    // ATN: feed the plate size in (set AFTER the struct-copy above, where the
+    // bed fields are trailing PODs) so auto-orient rejects any orientation whose
+    // footprint won't fit the bed. Reset the weights too — in min_area mode the
+    // memcpy above reads past OrientParamsArea and garbles these trailing fields.
+    params.BED_FIT_PENALTY = 1000.f;
+    params.BED_MARGIN = 5.f;
+    params.bed_size_x = 0.f;
+    params.bed_size_y = 0.f;
+    if (const DynamicPrintConfig* cfg = m_plater->config()) {
+        if (auto* pa = cfg->opt<ConfigOptionPoints>("printable_area")) {
+            double xmin = 1e9, xmax = -1e9, ymin = 1e9, ymax = -1e9;
+            for (const Vec2d& p : pa->values) {
+                xmin = std::min(xmin, p.x()); xmax = std::max(xmax, p.x());
+                ymin = std::min(ymin, p.y()); ymax = std::max(ymax, p.y());
+            }
+            if (xmax > xmin && ymax > ymin) {
+                params.bed_size_x = float(xmax - xmin);
+                params.bed_size_y = float(ymax - ymin);
+            }
+        }
+    }
+
     auto count = unsigned(m_selected.size() + m_unprintable.size());
     params.stopcondition = [&ctl]() { return ctl.was_canceled(); };
 

@@ -1,5 +1,7 @@
 #include "Orient.hpp"
 #include "Geometry.hpp"
+#include <cfloat>
+#include <cmath>
 #include <numeric>
 #include <ClipperUtils.hpp>
 #include <boost/geometry/index/rtree.hpp>
@@ -33,6 +35,7 @@ namespace orientation {
         float contour;
         float area_laf;  // area_of_low_angle_faces
         float area_projected; // area of projected 2D profile
+        float footprint_excess; // ATN: mm by which the XY footprint overflows the bed (0 = fits)
         float volume;
         float area_total;  // total area of all faces
         float radius;    // radius of bounding box
@@ -445,7 +448,55 @@ public:
         //float total_max_z = z_projected.maxCoeff();
         //costs.height_to_bottom_hull_ratio = SQ(total_max_z) / (costs.bottom_hull + 1e-7);
 
+        // ATN: bed-fit footprint. The part's footprint is its extent in the
+        // plane perpendicular to the (downward) orientation; the part can rotate
+        // freely about Z when arranged, so we align the measuring axes with the
+        // footprint's principal axes (PCA) to approximate the minimal rectangle.
+        costs.footprint_excess = bed_footprint_excess(orientation);
+
         return costs;
+    }
+
+    // Returns mm by which the oriented footprint overflows the bed (0 = fits).
+    float bed_footprint_excess(const Vec3f& down)
+    {
+        if (params.bed_size_x <= 0.f || params.bed_size_y <= 0.f)
+            return 0.f;
+        const std::vector<stl_vertex>& verts = mesh_convex_hull.its.vertices; // hull bounds the part, far fewer points
+        if (verts.size() < 3)
+            return 0.f;
+
+        Vec3f o = down.normalized();
+        Vec3f ref = std::abs(o.z()) < 0.9f ? Vec3f(0, 0, 1) : Vec3f(1, 0, 0);
+        Vec3f u0 = o.cross(ref).normalized();
+        Vec3f v0 = o.cross(u0).normalized();
+
+        double sa = 0, sb = 0;
+        for (const stl_vertex& p : verts) { sa += p.dot(u0); sb += p.dot(v0); }
+        const double n = double(verts.size());
+        const double ma = sa / n, mb = sb / n;
+        double saa = 0, sab = 0, sbb = 0;
+        for (const stl_vertex& p : verts) {
+            const double a = p.dot(u0) - ma, b = p.dot(v0) - mb;
+            saa += a * a; sab += a * b; sbb += b * b;
+        }
+        const double theta = 0.5 * std::atan2(2.0 * sab, saa - sbb);
+        const Vec3f u = (float)std::cos(theta) * u0 + (float)std::sin(theta) * v0;
+        const Vec3f v = (float)-std::sin(theta) * u0 + (float)std::cos(theta) * v0;
+
+        float umin = FLT_MAX, umax = -FLT_MAX, vmin = FLT_MAX, vmax = -FLT_MAX;
+        for (const stl_vertex& p : verts) {
+            const float a = p.dot(u), b = p.dot(v);
+            umin = std::min(umin, a); umax = std::max(umax, a);
+            vmin = std::min(vmin, b); vmax = std::max(vmax, b);
+        }
+        const float flong = std::max(umax - umin, vmax - vmin);
+        const float fshort = std::min(umax - umin, vmax - vmin);
+
+        const float blong = std::max(params.bed_size_x, params.bed_size_y) - params.BED_MARGIN;
+        const float bshort = std::min(params.bed_size_x, params.bed_size_y) - params.BED_MARGIN;
+
+        return std::max(0.f, flong - blong) + std::max(0.f, fshort - bshort);
     }
 
     float target_function(CostItems& costs, bool min_volume)
@@ -463,6 +514,12 @@ public:
             cost = params.RELATIVE_F * (costs.overhang * params.TAR_C + params.TAR_D + params.TAR_LAF * costs.area_laf * params.use_low_angle_face) / (params.TAR_D + params.CONTOUR_F * costs.contour + params.BOTTOM_F * bottom + params.BOTTOM_HULL_F * bottom_hull + params.TAR_PROJ_AREA * costs.area_projected);
         }
         cost += (costs.bottom < params.BOTTOM_MIN) * 100;// +(costs.height_to_bottom_hull_ratio > params.height_to_bottom_hull_ratio_MIN) * 110;
+
+        // ATN: an orientation whose footprint doesn't fit the plate is unprintable
+        // no matter how few supports it needs — push it far down the ranking, and
+        // among non-fitting ones prefer the least overflow.
+        if (costs.footprint_excess > 0.f)
+            cost += params.BED_FIT_PENALTY + costs.footprint_excess;
 
         costs.unprintability = cost;
 
