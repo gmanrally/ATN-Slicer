@@ -15826,6 +15826,28 @@ bool Plater::is_multi_extruder_ams_empty()
 }
 
 //BBS: add multiple plate reslice logic
+bool Plater::apply_optimized_gcode()
+{
+    PartPlate* plate = p->partplate_list.get_curr_plate();
+    if (plate == nullptr || !plate->is_slice_result_valid())
+        return false;
+    Print* print = plate->fff_print();
+    GCodeProcessorResult* result = plate->get_slice_result();
+    if (print == nullptr || result == nullptr)
+        return false;
+    try {
+        // Re-run only the gcode processor on the (modified) file — NOT Print::process,
+        // so the externally optimized gcode is kept rather than re-sliced away.
+        print->export_gcode_from_previous_file(plate->get_tmp_gcode_path(), result, nullptr);
+        p->preview->update_gcode_result(result);
+        p->preview->reload_print(false);
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "reload_gcode_from_disk failed: " << e.what();
+        return false;
+    }
+    return true;
+}
+
 void Plater::reslice()
 {
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", Line %1%: enter, process_completed_with_error=%2%")%__LINE__ %p->process_completed_with_error;

@@ -504,6 +504,9 @@ public:
     bool has_toolpaths_to_export() const;
     void export_toolpaths_to_obj() const;
     void reslice();
+    // ATN: re-process the current plate's (externally modified) gcode file into
+    // the preview without re-slicing, so an optimized gcode becomes what prints.
+    bool apply_optimized_gcode();
     void record_slice_preset(std::string action);
     void reslice_SLA_supports(const ModelObject &object, bool postpone_error_messages = false);
     void reslice_SLA_hollowing(const ModelObject &object, bool postpone_error_messages = false);

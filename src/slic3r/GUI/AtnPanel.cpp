@@ -106,6 +106,9 @@ void AtnPanel::on_script_message(wxWebViewEvent& evt)
             handle_request_preflight();
         } else if (command == "atn_capture_model") {
             handle_capture_model();
+        } else if (command == "atn_apply_optimized") {
+            handle_apply_optimized(root["data"]["b64"].get<std::string>(),
+                                   (size_t)root["data"]["raw_size"].get<long long>());
         } else {
             // Unknown to us - let the app-wide handler have a go.
             wxGetApp().handle_web_request(message);
@@ -316,6 +319,55 @@ void AtnPanel::handle_request_preflight()
         reply["data"]["enc"] = "raw";
         reply["data"]["b64"] = wxBase64Encode(bytes.data(), bytes.size()).ToStdString();
     }
+    send_to_page(reply.dump());
+}
+
+void AtnPanel::handle_apply_optimized(const std::string& b64, size_t raw_size)
+{
+    json reply;
+    reply["command"] = "atn_optimized_applied";
+
+    Plater*    plater = wxGetApp().plater();
+    PartPlate* plate  = plater ? plater->get_partplate_list().get_curr_plate() : nullptr;
+    if (plate == nullptr || !plate->is_slice_result_valid()) {
+        reply["data"]["ok"]      = false;
+        reply["data"]["message"] = "No valid sliced plate to apply to.";
+        send_to_page(reply.dump());
+        return;
+    }
+
+    // Decode + inflate (zlib) the optimized gcode the server sent back.
+    wxMemoryBuffer comp = wxBase64Decode(b64);
+    std::vector<unsigned char> raw(raw_size > 0 ? raw_size : 1);
+    mz_ulong out_len = (mz_ulong)raw.size();
+    const int rc = mz_uncompress(raw.data(), &out_len,
+                                 reinterpret_cast<const unsigned char*>(comp.GetData()),
+                                 (mz_ulong)comp.GetDataLen());
+    if (rc != MZ_OK) {
+        reply["data"]["ok"]      = false;
+        reply["data"]["message"] = "Could not decompress the optimized gcode.";
+        send_to_page(reply.dump());
+        return;
+    }
+    raw.resize(out_len);
+
+    // Overwrite the plate's gcode file, then re-process it into the preview
+    // (no re-slice). Export / send-to-printer then use the optimized bytes.
+    const std::string path = plate->get_tmp_gcode_path();
+    try {
+        boost::nowide::ofstream out(path, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(raw.data()), raw.size());
+    } catch (const std::exception& e) {
+        reply["data"]["ok"]      = false;
+        reply["data"]["message"] = std::string("Could not write gcode: ") + e.what();
+        send_to_page(reply.dump());
+        return;
+    }
+
+    const bool ok = plater->apply_optimized_gcode();
+    reply["data"]["ok"]      = ok;
+    reply["data"]["message"] = ok ? "Applied to the preview and print output." :
+                                    "Wrote the gcode but the preview reload failed.";
     send_to_page(reply.dump());
 }
 

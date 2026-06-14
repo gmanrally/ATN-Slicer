@@ -36,6 +36,7 @@ private:
     void        handle_set_setting(const std::string& key, const std::string& value);
     void        handle_request_preflight();
     void        handle_capture_model();
+    void        handle_apply_optimized(const std::string& b64, size_t raw_size);
 
     wxWebView* m_browser{ nullptr };
 };
