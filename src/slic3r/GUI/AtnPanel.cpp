@@ -269,18 +269,21 @@ void AtnPanel::handle_request_preflight()
     json reply;
     reply["command"] = "atn_gcode";
 
+    // Use the presence of a sliced gcode file as the source of truth rather than
+    // the is_slice_result_valid() flag, which a stray state change can flip even
+    // though a perfectly good gcode is still on disk.
     PartPlate* plate = wxGetApp().plater()->get_partplate_list().get_curr_plate();
-    if (plate == nullptr || !plate->is_slice_result_valid() || plate->get_slice_result() == nullptr) {
-        reply["data"]["ok"]      = false;
-        reply["data"]["message"] = "The current plate isn't sliced yet - slice it first, then run the report.";
-        send_to_page(reply.dump());
-        return;
+    std::string path;
+    if (plate != nullptr) {
+        GCodeProcessorResult* res = plate->get_slice_result();
+        if (res != nullptr && !res->filename.empty())
+            path = res->filename;
+        if (path.empty() || !boost::filesystem::exists(path))
+            path = plate->get_tmp_gcode_path();
     }
-
-    const std::string path = plate->get_slice_result()->filename;
-    if (path.empty() || !boost::filesystem::exists(path)) {
+    if (plate == nullptr || path.empty() || !boost::filesystem::exists(path)) {
         reply["data"]["ok"]      = false;
-        reply["data"]["message"] = "Sliced G-code file not found on disk.";
+        reply["data"]["message"] = "No sliced G-code found for this plate - slice it (or re-slice if you changed a setting) and try again.";
         send_to_page(reply.dump());
         return;
     }
