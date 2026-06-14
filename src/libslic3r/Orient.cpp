@@ -35,6 +35,8 @@ namespace orientation {
         float contour;
         float area_laf;  // area_of_low_angle_faces
         float area_projected; // area of projected 2D profile
+        float area_support; // ATN: true surface area (mm^2) needing support at this orientation
+        float height;       // ATN: build height (mm) along the orientation axis
         float footprint_excess; // ATN: mm by which the XY footprint overflows the bed (0 = fits)
         float volume;
         float area_total;  // total area of all faces
@@ -44,12 +46,12 @@ namespace orientation {
         CostItems(CostItems const & other) = default;
         CostItems() { memset(this, 0, sizeof(*this)); }
         static std::string field_names() {
-            return "                                      overhang, bottom, bothull, contour, A_laf, A_prj, unprintability";
+            return "                                      A_support, bottom, height, fit_excess, unprintability";
         }
         std::string field_values() {
             std::stringstream ss;
             ss << std::fixed << std::setprecision(1);
-            ss << overhang << ",\t" << bottom << ",\t" << bottom_hull << ",\t" << contour << ",\t" << area_laf << ",\t" << area_projected << ",\t" << unprintability;
+            ss << area_support << ",\t" << bottom << ",\t" << height << ",\t" << footprint_excess << ",\t" << unprintability;
             return ss.str();
         }
     };
@@ -413,6 +415,12 @@ public:
             costs.overhang = overhang_areas.array().cwiseAbs().sum();
         }
 
+        // ATN: the literal surface area (mm^2) that overhangs beyond the user's
+        // support-threshold angle and is not resting on the bed. This is what the
+        // rewritten objective minimises. Uses real face areas (not the
+        // appearance-weighted ones) so it is the true area a slicer would support.
+        costs.area_support = ((normal_projection.array() < params.ASCENT) * (!bottom_condition_2nd)).select(areas, 0).sum();
+
         {
             // contour perimeter
 #if 1
@@ -452,7 +460,13 @@ public:
         // plane perpendicular to the (downward) orientation; the part can rotate
         // freely about Z when arranged, so we align the measuring axes with the
         // footprint's principal axes (PCA) to approximate the minimal rectangle.
-        costs.footprint_excess = bed_footprint_excess(orientation);
+        // Also penalise height that exceeds the printer's build height (so a
+        // part doesn't get stood on end taller than the machine can print).
+        costs.height = z_projected.maxCoeff() - total_min_z; // extent along the orientation axis
+        float height_excess = 0.f;
+        if (params.bed_size_z > 0.f)
+            height_excess = std::max(0.f, costs.height - (params.bed_size_z - params.BED_MARGIN));
+        costs.footprint_excess = bed_footprint_excess(orientation) + height_excess;
 
         return costs;
     }
@@ -499,25 +513,39 @@ public:
         return std::max(0.f, flong - blong) + std::max(0.f, fshort - bshort);
     }
 
-    float target_function(CostItems& costs, bool min_volume)
+    // ATN rewrite: choose the orientation that needs the least support, while
+    // staying inside the build volume.
+    //
+    //   Primary objective  — minimise the part's surface area (mm^2) that
+    //                        overhangs beyond the user's support-threshold angle
+    //                        (OrientMesh::overhang_angle, e.g. 30 deg) and would
+    //                        therefore need support material.
+    //   Hard constraint    — the oriented part must fit the printer's X, Y and Z.
+    //                        An orientation that overflows the plate or exceeds
+    //                        the build height is rejected outright, no matter how
+    //                        little support it needs.
+    //   Tie-breakers       — among orientations with near-equal support area,
+    //                        prefer more bed contact (stability/adhesion) and a
+    //                        lower build height (stability, headroom). These are
+    //                        deliberately small so they never override the
+    //                        primary support-area objective.
+    float target_function(CostItems& costs, bool /*min_volume*/)
     {
-        float cost=0;
-        float bottom = costs.bottom;//std::min(costs.bottom, params.BOTTOM_MAX);
-        float bottom_hull = costs.bottom_hull;// std::min(costs.bottom_hull, params.BOTTOM_HULL_MAX);
-        if (min_volume)
-        {
-            float overhang = costs.overhang / 25;
-            cost = params.TAR_A * (overhang + params.TAR_B) + params.RELATIVE_F * (/*costs.volume/100*/overhang*params.TAR_C + params.TAR_D + params.TAR_LAF * costs.area_laf * params.use_low_angle_face) / (params.TAR_D + params.CONTOUR_F * costs.contour + params.BOTTOM_F * bottom + params.BOTTOM_HULL_F * bottom_hull + params.TAR_E * overhang + params.TAR_PROJ_AREA * costs.area_projected);
-        }
-        else {
-            float overhang = costs.overhang;
-            cost = params.RELATIVE_F * (costs.overhang * params.TAR_C + params.TAR_D + params.TAR_LAF * costs.area_laf * params.use_low_angle_face) / (params.TAR_D + params.CONTOUR_F * costs.contour + params.BOTTOM_F * bottom + params.BOTTOM_HULL_F * bottom_hull + params.TAR_PROJ_AREA * costs.area_projected);
-        }
-        cost += (costs.bottom < params.BOTTOM_MIN) * 100;// +(costs.height_to_bottom_hull_ratio > params.height_to_bottom_hull_ratio_MIN) * 110;
+        const float BOTTOM_REWARD  = 0.01f; // per mm^2 of first-layer bed contact
+        const float HEIGHT_PENALTY = 0.10f; // per mm of build height
 
-        // ATN: an orientation whose footprint doesn't fit the plate is unprintable
-        // no matter how few supports it needs — push it far down the ranking, and
-        // among non-fitting ones prefer the least overflow.
+        float cost = costs.area_support
+                   - BOTTOM_REWARD  * costs.bottom
+                   + HEIGHT_PENALTY * costs.height;
+
+        // A part with essentially no bed contact will topple or fail to adhere;
+        // keep it out of contention even if its support area is low.
+        if (costs.bottom < params.BOTTOM_MIN)
+            cost += 1000.f;
+
+        // Build-volume fit is a hard constraint: footprint_excess already folds
+        // in both the XY overflow and the Z over-height. Reject non-fitting
+        // orientations; among them, prefer the least overflow.
         if (costs.footprint_excess > 0.f)
             cost += params.BED_FIT_PENALTY + costs.footprint_excess;
 
