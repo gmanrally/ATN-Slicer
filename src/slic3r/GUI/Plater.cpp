@@ -15840,7 +15840,10 @@ bool Plater::apply_optimized_gcode()
         // so the externally optimized gcode is kept rather than re-sliced away.
         print->export_gcode_from_previous_file(plate->get_tmp_gcode_path(), result, nullptr);
         p->preview->update_gcode_result(result);
-        p->preview->reload_print(false);
+        // only_gcode=true: load the gcode preview straight from the (updated)
+        // result, bypassing the is_slice_result_valid() gate in load_print_as_fff
+        // so the optimized gcode actually re-renders.
+        p->preview->reload_print(true);
     } catch (const std::exception& e) {
         BOOST_LOG_TRIVIAL(error) << "reload_gcode_from_disk failed: " << e.what();
         return false;
