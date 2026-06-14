@@ -367,10 +367,23 @@ void AtnPanel::handle_apply_optimized(const std::string& b64, size_t raw_size)
         return;
     }
 
-    const bool ok = plater->apply_optimized_gcode();
-    reply["data"]["ok"]      = ok;
-    reply["data"]["message"] = ok ? "Applied to the preview and print output." :
-                                    "Wrote the gcode but the preview reload failed.";
+    // Read the estimated print time before/after the reprocess so the panel can
+    // confirm the change definitively, regardless of which slicer field updates.
+    auto normal_time_s = [&]() -> float {
+        GCodeProcessorResult* r = plate->get_slice_result();
+        return r ? r->print_statistics.modes[
+                       static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time
+                 : 0.0f;
+    };
+    const float before_s = normal_time_s();
+    const bool  ok       = plater->apply_optimized_gcode();
+    const float after_s  = normal_time_s();
+
+    reply["data"]["ok"]       = ok;
+    reply["data"]["before_s"] = before_s;
+    reply["data"]["after_s"]  = after_s;
+    reply["data"]["message"]  = ok ? "Applied to the preview and print output." :
+                                     "Wrote the gcode but the preview reload failed.";
     send_to_page(reply.dump());
 }
 
