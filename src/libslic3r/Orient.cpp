@@ -36,6 +36,7 @@ namespace orientation {
         float area_laf;  // area_of_low_angle_faces
         float area_projected; // area of projected 2D profile
         float area_support; // ATN: true surface area (mm^2) needing support at this orientation
+        float support_volume; // ATN: swept support volume (mm^3) under overhangs to the bed
         float height;       // ATN: build height (mm) along the orientation axis
         float footprint_excess; // ATN: mm by which the XY footprint overflows the bed (0 = fits)
         float volume;
@@ -421,6 +422,16 @@ public:
         // appearance-weighted ones) so it is the true area a slicer would support.
         costs.area_support = ((normal_projection.array() < params.ASCENT) * (!bottom_condition_2nd)).select(areas, 0).sum();
 
+        // ATN: swept support volume (mm^3) under those overhangs, for the print-time
+        // objective. Per overhang face: horizontal projected area (area * |n . up|)
+        // times its height above the bed (the support column reaches down to the
+        // plate, worst case). Summed, this is proportional to the support material
+        // a slicer would lay down at this orientation/angle.
+        Eigen::ArrayXf supp_col = areas.array() * normal_projection.array().abs()
+                                  * (z_mean.array() - total_min_z).max(0.0f);
+        costs.support_volume = ((normal_projection.array() < params.ASCENT) * (!bottom_condition_2nd))
+                                 .select(supp_col, 0.0f).sum();
+
         {
             // contour perimeter
 #if 1
@@ -534,9 +545,36 @@ public:
         const float BOTTOM_REWARD  = 0.01f; // per mm^2 of first-layer bed contact
         const float HEIGHT_PENALTY = 0.10f; // per mm of build height
 
-        float cost = costs.area_support
-                   - BOTTOM_REWARD  * costs.bottom
-                   + HEIGHT_PENALTY * costs.height;
+        float cost;
+        if (params.objective == 1) {
+            // ATN: minimise print time as an actual time estimate (seconds), so the
+            // flat-vs-support trade-off is computed, not weighted by a fudge factor:
+            //
+            //   T ~= layers * t_layer  +  support_material_volume / Q
+            //
+            //   layers = build height / layer height            (taller => slower)
+            //   support_volume = swept volume under overhangs at the chosen angle,
+            //                    times a sparse-support density  (more overhang => slower)
+            //   t_layer = fixed per-layer overhead (z-hop + travel + accel ramps)
+            //   Q       = volumetric flow rate of the nozzle
+            //
+            // Only the orientation-dependent terms matter for ranking; the part's own
+            // extrusion time is ~constant across orientations and drops out.
+            const float t_layer    = 0.8f;   // s of overhead per layer
+            const float support_d  = 0.12f;  // sparse support infill fraction
+            const float Q          = 8.0f;   // mm^3/s volumetric flow
+            const float lh         = params.layer_height > 0.f ? params.layer_height : 0.2f;
+
+            const float t_layers  = (costs.height / lh) * t_layer;
+            const float t_support = (costs.support_volume * support_d) / Q;
+            cost = t_layers + t_support;
+        } else {
+            // ATN: minimise support area (default) at the user's overhang angle, with
+            // bed-contact reward and a small height penalty as tie-breaks.
+            cost = costs.area_support
+                 - BOTTOM_REWARD  * costs.bottom
+                 + HEIGHT_PENALTY * costs.height;
+        }
 
         // A part with essentially no bed contact will topple or fail to adhere;
         // keep it out of contention even if its support area is low.

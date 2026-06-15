@@ -503,6 +503,9 @@ public:
         float overhang_angle = 60.f;
         bool  enable_rotation = false;
         bool  min_area = true;
+        // ATN: orientation objective. false = minimise support area at overhang_angle;
+        // true = minimise print time (lie flattest that fits, support as tie-break).
+        bool  min_time = false;
     };
 
     //BBS: add canvas type for assemble view usage

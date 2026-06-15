@@ -5811,6 +5811,7 @@ bool GLCanvas3D::_render_orient_menu(float left, float right, float bottom, floa
     float angle_min = 45.f;
     std::string angle_key = "overhang_angle", rot_key = "enable_rotation";
     std::string key_min_area = "min_area";
+    std::string key_min_time = "min_time";
     std::string postfix = "_fff";
 
     if (ptech == ptSLA) {
@@ -5822,22 +5823,38 @@ bool GLCanvas3D::_render_orient_menu(float left, float right, float bottom, floa
     angle_key += postfix;
     rot_key += postfix;
 
-    //if (imgui->slider_float(_L("Overhang Angle"), &settings.overhang_angle, angle_min, 90.0f, "%5.2f") || angle_min > settings.overhang_angle) {
-    //    settings.overhang_angle = std::max(angle_min, settings.overhang_angle);
-    //    settings_out.overhang_angle = settings.overhang_angle;
-    //    appcfg->set("orient", angle_key, std::to_string(settings_out.overhang_angle));
-    //    settings_changed = true;
-    //}
+    // ATN: pick the orientation objective.
+    ImGui::TextUnformatted(_u8L("Orient to:").c_str());
+    int obj = settings.min_time ? 1 : 0;
+    if (ImGui::RadioButton(_u8L("Minimise support area").c_str(), &obj, 0)) {
+        settings_out.min_time = false;
+        appcfg->set("orient", key_min_time, "0");
+        settings_changed = true;
+    }
+    // The overhang angle only matters to the support-area objective: faces steeper
+    // than this need support, so it defines what we're minimising.
+    if (!settings.min_time) {
+        ImGui::Indent(18.0f);
+        float ang = settings.overhang_angle;
+        ImGui::SetNextItemWidth(150.0f);
+        if (ImGui::SliderFloat(_u8L("Overhang angle").c_str(), &ang, 20.0f, 90.0f, "%.0f deg")) {
+            settings_out.overhang_angle = std::max(20.0f, std::min(90.0f, ang));
+            appcfg->set("orient", angle_key, std::to_string(settings_out.overhang_angle));
+            settings_changed = true;
+        }
+        ImGui::Unindent(18.0f);
+    }
+    if (ImGui::RadioButton(_u8L("Minimise print time").c_str(), &obj, 1)) {
+        settings_out.min_time = true;
+        appcfg->set("orient", key_min_time, "1");
+        settings_changed = true;
+    }
+
+    ImGui::Separator();
 
     if (imgui->checkbox(_L("Enable rotation"), settings.enable_rotation)) {
         settings_out.enable_rotation = settings.enable_rotation;
         appcfg->set("orient", rot_key, settings_out.enable_rotation ? "1" : "0");
-        settings_changed = true;
-    }
-
-    if (imgui->checkbox(_L("Optimize support interface area"), settings.min_area)) {
-        settings_out.min_area = settings.min_area;
-        appcfg->set("orient", key_min_area, settings_out.min_area ? "1" : "0");
         settings_changed = true;
     }
 
@@ -5856,6 +5873,7 @@ bool GLCanvas3D::_render_orient_menu(float left, float right, float bottom, floa
         appcfg->set("orient", angle_key, std::to_string(settings_out.overhang_angle));
         appcfg->set("orient", rot_key, settings_out.enable_rotation ? "1" : "0");
         appcfg->set("orient", key_min_area, settings_out.min_area? "1" : "0");
+        appcfg->set("orient", key_min_time, settings_out.min_time ? "1" : "0");
         settings_changed = true;
     }
 
@@ -6775,20 +6793,15 @@ bool GLCanvas3D::_init_main_toolbar()
     item.icon_filename = m_is_dark ? "toolbar_orient_dark.svg" : "toolbar_orient.svg";
     item.tooltip = _utf8(L("Auto orient all/selected objects")) + " [Q]\n" + _utf8(L("Auto orient all objects on current plate")) + " [" + _utf8(L("Shift+")) + "Q]";
     item.sprite_id++;
-    item.left.render_callback = nullptr;
     item.enabling_callback = []()->bool { return wxGetApp().plater()->can_arrange(); };
-    item.left.toggable = false;  // allow right mouse click
-    //BBS: GUI refactor: adjust the main toolbar position
-    item.left.action_callback = [this]() {
+    // ATN: open the auto-orient options pop-up on click (objective + overhang
+    // angle), like Arrange. The pop-up's own Orient button runs the job; the
+    // [Q]/[Shift+Q] hotkeys still quick-orient with the current settings.
+    item.left.toggable = true;
+    item.left.action_callback = []() {};
+    item.left.render_callback = [this](float left, float right, float bottom, float top) {
         if (m_canvas != nullptr)
-        {
-            wxGetApp().plater()->set_prepare_state(Job::PREPARE_STATE_DEFAULT);
-            wxGetApp().plater()->orient();
-            //BBS do not show orient menu
-            //_render_orient_menu(left, right, bottom, top);
-            NetworkAgent* agent = GUI::wxGetApp().getAgent();
-            if (agent) agent->track_update_property("auto_orient", std::to_string(++auto_orient_count));
-        }
+            _render_orient_menu(left, right, bottom, top);
     };
     if (!m_main_toolbar.add_item(item))
         return false;

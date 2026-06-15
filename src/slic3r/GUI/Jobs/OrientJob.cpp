@@ -178,6 +178,7 @@ void OrientJob::process(Ctl &ctl)
     params.BED_MARGIN = 5.f;
     params.bed_size_x = 0.f;
     params.bed_size_y = 0.f;
+    params.bed_size_z = 0.f;
     if (const DynamicPrintConfig* cfg = m_plater->config()) {
         if (auto* pa = cfg->opt<ConfigOptionPoints>("printable_area")) {
             double xmin = 1e9, xmax = -1e9, ymin = 1e9, ymax = -1e9;
@@ -190,6 +191,16 @@ void OrientJob::process(Ctl &ctl)
                 params.bed_size_y = float(ymax - ymin);
             }
         }
+        if (auto* ph = cfg->opt<ConfigOptionFloat>("printable_height"))
+            params.bed_size_z = float(ph->value);
+    }
+
+    // ATN: orientation objective chosen in the auto-orient pop-up (trailing POD,
+    // set after the struct-copy above). 1 = minimise print time, 0 = min support.
+    params.objective = settings.min_time ? 1 : 0;
+    if (const DynamicPrintConfig* cfg = m_plater->config()) {
+        if (auto* lh = cfg->opt<ConfigOptionFloat>("layer_height"))
+            if (lh->value > 0.0) params.layer_height = float(lh->value);
     }
 
     auto count = unsigned(m_selected.size() + m_unprintable.size());
@@ -199,6 +210,11 @@ void OrientJob::process(Ctl &ctl)
         st += m_unprintable.size();
         if (st > 0) ctl.update_status(int(st / float(count) * 100), _u8L("Orienting") + " " + orientstr);
     };
+
+    // ATN: apply the overhang angle chosen in the auto-orient pop-up to every
+    // object, overriding the per-object support_threshold_angle default.
+    for (auto& om : m_selected)
+        om.overhang_angle = settings.overhang_angle;
 
     orientation::orient(m_selected, m_unselected, params);
 
