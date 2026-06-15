@@ -21,6 +21,7 @@
 #include <boost/nowide/fstream.hpp>
 #include <nlohmann/json.hpp>
 #include <sstream>
+#include <unordered_map>
 #include <wx/base64.h>
 #include <wx/sizer.h>
 #include <wx/utils.h>
@@ -109,6 +110,8 @@ void AtnPanel::on_script_message(wxWebViewEvent& evt)
             send_to_page(reply.dump());
         } else if (command == "atn_highlight_setting") {
             handle_highlight_setting(root["data"]["key"].get<std::string>());
+        } else if (command == "atn_highlight_tool") {
+            handle_highlight_tool(root["data"]["tool"].get<std::string>());
         } else if (command == "atn_set_setting") {
             handle_set_setting(root["data"]["key"].get<std::string>(), root["data"]["value"].get<std::string>());
         } else if (command == "atn_request_preflight") {
@@ -202,6 +205,69 @@ void AtnPanel::handle_highlight_setting(const std::string& key)
     // Bring the editor into view, then jump and blink.
     wxGetApp().mainframe->select_tab(size_t(MainFrame::tp3DEditor));
     wxGetApp().sidebar().jump_to_option(key, type, L"");
+}
+
+// ATN: let the assistant point the user at an actual tool/button (blinking arrow),
+// so it never has to describe a screen position it might get wrong. Maps a stable
+// friendly key to either a left-toolbar gizmo (Cut, Move, …) or a top-toolbar item
+// (Arrange, Auto-orient, …) and triggers Orca's built-in highlighter.
+void AtnPanel::handle_highlight_tool(const std::string& tool)
+{
+    // {friendly key -> {is_gizmo, internal name}}. Gizmo names are the icon
+    // basename (theme suffix handled below); toolbar names are the item ids.
+    static const std::unordered_map<std::string, std::pair<bool, std::string>> kTools = {
+        {"move",            {true,  "toolbar_move"}},
+        {"rotate",          {true,  "toolbar_rotate"}},
+        {"scale",           {true,  "toolbar_scale"}},
+        {"place_on_face",   {true,  "toolbar_flatten"}},
+        {"flatten",         {true,  "toolbar_flatten"}},
+        {"cut",             {true,  "toolbar_cut"}},
+        {"mesh_boolean",    {true,  "toolbar_meshboolean"}},
+        {"boolean",         {true,  "toolbar_meshboolean"}},
+        {"supports",        {true,  "toolbar_support"}},
+        {"support_painter", {true,  "toolbar_support"}},
+        {"seam",            {true,  "toolbar_seam"}},
+        {"fuzzy_skin",      {true,  "toolbar_fuzzy_skin_paint"}},
+        {"color_paint",     {true,  "mmu_segmentation"}},
+        {"mmu",             {true,  "mmu_segmentation"}},
+        {"text",            {true,  "toolbar_text"}},
+        {"measure",         {true,  "toolbar_measure"}},
+        {"assembly",        {true,  "toolbar_assembly"}},
+        {"add",             {false, "add"}},
+        {"import",          {false, "add"}},
+        {"add_plate",       {false, "addplate"}},
+        {"auto_orient",     {false, "orient"}},
+        {"orient",          {false, "orient"}},
+        {"arrange",         {false, "arrange"}},
+        {"split_objects",   {false, "splitobjects"}},
+        {"split_parts",     {false, "splitvolumes"}},
+        {"variable_layer_height", {false, "layersediting"}},
+    };
+
+    json reply;
+    reply["command"]     = "atn_tool_highlighted";
+    reply["data"]["tool"] = tool;
+
+    const auto it = kTools.find(tool);
+    GLCanvas3D* canvas = wxGetApp().plater() ? wxGetApp().plater()->get_view3D_canvas3D() : nullptr;
+    if (it == kTools.end() || canvas == nullptr) {
+        reply["data"]["ok"] = false;
+        send_to_page(reply.dump());
+        return;
+    }
+
+    // Bring the 3D editor into view so the blinking arrow is visible.
+    wxGetApp().mainframe->select_tab(size_t(MainFrame::tp3DEditor));
+    if (it->second.first) {
+        // Gizmo: the icon basename carries a "_dark" suffix in dark theme; try both,
+        // the non-matching one is a harmless no-op.
+        canvas->highlight_gizmo(it->second.second);
+        canvas->highlight_gizmo(it->second.second + "_dark");
+    } else {
+        canvas->highlight_toolbar_item(it->second.second);
+    }
+    reply["data"]["ok"] = true;
+    send_to_page(reply.dump());
 }
 
 // Returns the edited config that owns this key, or nullptr if no preset defines it.
