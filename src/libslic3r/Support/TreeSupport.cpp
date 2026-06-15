@@ -1540,7 +1540,8 @@ void TreeSupport::generate_toolpaths()
                         filler_Roof1stLayer->angle = base_support_angle;
                         fill_params.dont_sort = true;
                         Flow interface_base_flow = interface_as_base ? support_flow : interface_flow;
-                        ExtrusionRole interface_role = interface_as_base ? erSupportMaterial : erSupportMaterialInterface;
+                        // Orca/ATN: Roof1stLayer is the top contact layer — tag it distinctly so the support-interface fan targets only it.
+                        ExtrusionRole interface_role = interface_as_base ? erSupportMaterial : erSupportMaterialInterfaceTop;
                         // generate a perimeter first to support interface better
                         ExtrusionEntityCollection* temp_support_fills = new ExtrusionEntityCollection();
                         make_perimeter_and_infill(temp_support_fills->entities, poly, 1, interface_base_flow, interface_role,

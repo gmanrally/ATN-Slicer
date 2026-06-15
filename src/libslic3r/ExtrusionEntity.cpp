@@ -598,7 +598,8 @@ std::string ExtrusionEntity::role_to_string(ExtrusionRole role)
         case erSkirt                        : return L("Skirt");
         case erBrim                         : return L("Brim");
         case erSupportMaterial              : return L("Support");
-        case erSupportMaterialInterface     : return L("Support interface");
+        case erSupportMaterialInterface     :
+        case erSupportMaterialInterfaceTop  : return L("Support interface");
         case erSupportTransition            : return L("Support transition");
         case erWipeTower                    : return L("Prime tower");
         case erCustom                       : return L("Custom");

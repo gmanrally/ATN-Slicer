@@ -113,6 +113,7 @@ EGCodeExtrusionRole convert(Slic3r::ExtrusionRole role)
     case Slic3r::ExtrusionRole::erSkirt:                       { return EGCodeExtrusionRole::Skirt; }
     case Slic3r::ExtrusionRole::erSupportMaterial:             { return EGCodeExtrusionRole::SupportMaterial; }
     case Slic3r::ExtrusionRole::erSupportMaterialInterface:    { return EGCodeExtrusionRole::SupportMaterialInterface; }
+    case Slic3r::ExtrusionRole::erSupportMaterialInterfaceTop: { return EGCodeExtrusionRole::SupportMaterialInterface; }
     case Slic3r::ExtrusionRole::erWipeTower:                   { return EGCodeExtrusionRole::WipeTower; }
     case Slic3r::ExtrusionRole::erCustom:                      { return EGCodeExtrusionRole::Custom; }
     // ORCA

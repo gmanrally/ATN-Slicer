@@ -34,6 +34,7 @@ enum ExtrusionRole : uint8_t {
     erBrim,
     erSupportMaterial,
     erSupportMaterialInterface,
+    erSupportMaterialInterfaceTop, // Orca: top contact layer only — lets the support-interface fan target just the top layer
     erSupportTransition,
     erWipeTower,
     erCustom,

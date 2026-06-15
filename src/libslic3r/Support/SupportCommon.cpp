@@ -1730,7 +1730,10 @@ void generate_support_toolpaths(
                         // Filler and its parameters
                         filler, float(density),
                         // Extrusion parameters
-                        interface_as_base ? ExtrusionRole::erSupportMaterial : ExtrusionRole::erSupportMaterialInterface, interface_flow);
+                        interface_as_base ? ExtrusionRole::erSupportMaterial :
+                            // Orca/ATN: tag the top contact layer distinctly so the support-interface fan can target only it.
+                            (interface_layer_type == InterfaceLayerType::TopContact ? ExtrusionRole::erSupportMaterialInterfaceTop : ExtrusionRole::erSupportMaterialInterface),
+                        interface_flow);
                 }
             };
             const bool top_interfaces = support_params.num_top_interface_layers > 0;
