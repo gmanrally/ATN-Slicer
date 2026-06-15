@@ -118,6 +118,15 @@ void AtnPanel::on_script_message(wxWebViewEvent& evt)
         } else if (command == "atn_apply_optimized") {
             handle_apply_optimized(root["data"]["b64"].get<std::string>(),
                                    (size_t)root["data"]["raw_size"].get<long long>());
+        } else if (command == "atn_entitlements") {
+            // The panel reports the signed-in user's tier entitlements. Mid-air
+            // markers in the viewport are Hobbyist-and-up; flip the flag and
+            // refresh the preview so they appear/disappear immediately.
+            const bool rule_based = root["data"].value("rule_based", false);
+            wxGetApp().set_atn_floating_entitled(rule_based);
+            if (Plater* plater = wxGetApp().plater())
+                if (GLCanvas3D* canvas = plater->get_preview_canvas3D())
+                    canvas->set_as_dirty();
         } else {
             // Unknown to us - let the app-wide handler have a go.
             wxGetApp().handle_web_request(message);

@@ -301,6 +301,10 @@ private:
     bool m_networking_compatible { false };
     bool m_networking_need_update { false };
     bool m_networking_cancel_update { false };
+    // ATN: mid-air / floating-extrusion viewport markers are a Hobbyist-and-up
+    // feature. The assistant panel reports the signed-in user's entitlement; the
+    // gcode viewer only draws the markers when this is true. Default off.
+    bool m_atn_floating_entitled { false };
     std::shared_ptr<UpgradeNetworkJob> m_upgrade_network_job;
 
     // ORCA: for installing vendors on the main thread when presets to be synced requires it
@@ -366,6 +370,9 @@ public:
     bool is_editor() const { return m_app_mode == EAppMode::Editor; }
     bool is_gcode_viewer() const { return m_app_mode == EAppMode::GCodeViewer; }
     bool is_recreating_gui() const { return m_is_recreating_gui; }
+    // ATN: floating-extrusion marker entitlement (set by the assistant panel).
+    bool atn_floating_entitled() const { return m_atn_floating_entitled; }
+    void set_atn_floating_entitled(bool v) { m_atn_floating_entitled = v; }
     std::string logo_name() const { return is_editor() ? "OrcaSlicer" : "OrcaSlicer-gcodeviewer"; }
 
     bool is_closing() const { return m_is_closing.load(std::memory_order_acquire); }

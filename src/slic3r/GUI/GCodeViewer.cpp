@@ -1540,7 +1540,9 @@ void GCodeViewer::load_floating_extrusion_spots(const Print& print)
 
 void GCodeViewer::render_floating_extrusion_spots()
 {
-    if (!m_floating_spots_visible || !m_floating_spots_model.is_initialized())
+    // ATN: mid-air detection markers are a Hobbyist-and-up feature; the assistant
+    // panel sets the entitlement from the signed-in user's tier.
+    if (!m_floating_spots_visible || !m_floating_spots_model.is_initialized() || !wxGetApp().atn_floating_entitled())
         return;
 
     GLShaderProgram* shader = wxGetApp().get_shader("gouraud_light");
