@@ -8,6 +8,8 @@
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/GCode/ThumbnailData.hpp"
 #include "libslic3r/Geometry/ConvexHull.hpp"
+#include "libslic3r/AABBMesh.hpp"
+#include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/ExtrusionEntity.hpp"
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/Utils.hpp"
@@ -2062,6 +2064,7 @@ void GLCanvas3D::render(bool only_init)
         _render_sla_slices();
         _render_selection();
         _render_objects(GLVolumeCollection::ERenderType::Transparent, !m_gizmos.is_running());
+        _render_midair_markers();
     }
     /* preview render */
     else if (m_canvas_type == ECanvasType::CanvasPreview && m_render_preview) {
@@ -8067,6 +8070,136 @@ void GLCanvas3D::_render_cast_shadows_on_plate(const Transform3d& view_matrix, c
 void GLCanvas3D::_render_plane() const
 {
     ;//TODO render assemble plane
+}
+
+// ATN: build red octahedron markers on downward overhang faces (steeper than the
+// support threshold) that have nothing beneath them — true mid-air extrusions the
+// user can catch and reorient before slicing. The angle test mirrors the existing
+// overhang highlight; the novel part is the downward occlusion ray.
+void GLCanvas3D::_build_midair_markers()
+{
+    m_midair_markers.reset();
+    if (m_model == nullptr)
+        return;
+
+    const float  normal_z_thr = m_volumes.get_selection_support_normal_z(); // face is overhang if world n.z < this
+    const double BED_Z = 0.0;
+    const double EPS   = 1e-3;
+
+    struct Tri { Vec3f a, b, c, n; };
+    std::vector<Tri> tris;
+    for (const ModelObject* obj : m_model->objects) {
+        TriangleMesh tm = obj->mesh(); // object-local merged mesh
+        if (tm.its.indices.empty())
+            continue;
+        for (const ModelInstance* inst : obj->instances) {
+            if (!inst->printable)
+                continue;
+            indexed_triangle_set its = tm.its; // copy, then move vertices to world
+            const Transform3d M = inst->get_matrix();
+            for (Vec3f& v : its.vertices)
+                v = (M * v.cast<double>()).cast<float>();
+            AABBMesh aabb(its); // for the downward occlusion test
+            for (const stl_triangle_vertex_indices& f : its.indices) {
+                const Vec3f& a = its.vertices[f[0]];
+                const Vec3f& b = its.vertices[f[1]];
+                const Vec3f& c = its.vertices[f[2]];
+                Vec3f n   = (b - a).cross(c - a);
+                float len = n.norm();
+                if (len < 1e-9f)
+                    continue;
+                n /= len;
+                if (n.z() >= normal_z_thr) // not a downward overhang beyond the threshold
+                    continue;
+                const Vec3f centroid = (a + b + c) / 3.0f;
+                if (centroid.z() <= BED_Z + 0.2f) // resting on the plate — supported
+                    continue;
+                // Cast straight down from just under the face. Supported iff it hits
+                // geometry before reaching the bed; otherwise it prints into air.
+                const Vec3d origin = centroid.cast<double>() - Vec3d(0, 0, EPS);
+                const AABBMesh::hit_result hit = aabb.query_ray_hit(origin, Vec3d(0, 0, -1));
+                const bool supported = hit.is_hit() && hit.distance() > EPS &&
+                                       (origin.z() - hit.distance()) > BED_Z + EPS;
+                if (!supported)
+                    tris.push_back({ a, b, c, n });
+            }
+        }
+    }
+    if (tris.empty())
+        return;
+
+    // Paint the actual unsupported faces as a clean overlay, lifted slightly off
+    // the surface along the face normal to avoid z-fighting with the model and the
+    // red overhang shading beneath. Distinct orange = "overhang AND mid-air", so it
+    // reads apart from Orca's standard red overhang highlight (overhang-but-supported).
+    GLModel::Geometry data;
+    data.format = { GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3N3 };
+    data.reserve_vertices(tris.size() * 3);
+    data.reserve_indices(tris.size() * 3);
+    const float LIFT = 0.15f; // mm proud of the surface
+    unsigned int base = 0;
+    for (const Tri& t : tris) {
+        const Vec3f off = t.n * LIFT;
+        data.add_vertex(t.a + off, t.n);
+        data.add_vertex(t.b + off, t.n);
+        data.add_vertex(t.c + off, t.n);
+        data.add_triangle(base + 0, base + 1, base + 2);
+        base += 3;
+    }
+    m_midair_markers.init_from(std::move(data));
+    m_midair_markers.set_color({ 1.0f, 0.5f, 0.0f, 0.85f }); // orange
+}
+
+void GLCanvas3D::_render_midair_markers()
+{
+    // Only while the overhang highlight is on — this is its support-aware companion.
+    if (!is_using_slope() || m_model == nullptr)
+        return;
+
+    // Cheap signature so the (expensive) raycast pass only re-runs when geometry or
+    // placement actually moves, not every frame.
+    size_t sig = 0;
+    auto mix = [&sig](double v) {
+        sig ^= std::hash<long long>()((long long)std::llround(v * 1000.0)) + 0x9e3779b97f4a7c15ULL + (sig << 6) + (sig >> 2);
+    };
+    for (const ModelObject* obj : m_model->objects) {
+        for (const ModelVolume* v : obj->volumes)
+            mix((double)v->mesh().its.vertices.size());
+        for (const ModelInstance* inst : obj->instances) {
+            const Transform3d& m = inst->get_matrix();
+            for (int i = 0; i < 4; ++i)
+                for (int j = 0; j < 4; ++j)
+                    mix(m(i, j));
+        }
+    }
+    if (sig != m_midair_sig) {
+        _build_midair_markers();
+        m_midair_sig = sig;
+    }
+    if (!m_midair_markers.is_initialized())
+        return;
+
+    GLShaderProgram* shader = wxGetApp().get_shader("gouraud_light");
+    if (shader == nullptr)
+        return;
+
+    glsafe(::glEnable(GL_DEPTH_TEST));
+    glsafe(::glEnable(GL_BLEND));
+    glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
+
+    shader->start_using();
+    shader->set_uniform("emission_factor", 0.85f); // nearly self-lit so the orange reads as a flat highlight
+    const Camera&      camera      = wxGetApp().plater()->get_camera();
+    const Transform3d& view_matrix = camera.get_view_matrix();
+    shader->set_uniform("view_model_matrix", view_matrix);
+    shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+    const Matrix3d view_normal_matrix = view_matrix.matrix().block(0, 0, 3, 3);
+    shader->set_uniform("view_normal_matrix", view_normal_matrix);
+
+    m_midair_markers.render();
+
+    shader->stop_using();
+    glsafe(::glDisable(GL_BLEND));
 }
 
 //BBS: add outline drawing logic

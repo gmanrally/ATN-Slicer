@@ -732,6 +732,11 @@ public:
     std::array<unsigned int, 2> m_ssao_texture_size{ { 0, 0 } };
     GLModel m_plate_shadow_mask;
     std::string m_plate_shadow_mask_key;
+    // ATN: pre-slice mid-air markers — red octahedra on downward overhang faces
+    // (beyond the support threshold) that have nothing beneath them. Shown while
+    // the overhang highlight is active; rebuilt only when geometry/placement moves.
+    GLModel m_midair_markers;
+    size_t  m_midair_sig{ 0 };
 public:
     explicit GLCanvas3D(wxGLCanvas* canvas, Bed3D &bed);
     ~GLCanvas3D();
@@ -1256,6 +1261,9 @@ private:
     void _render_platelist(const Transform3d& view_matrix, const Transform3d& projection_matrix, bool bottom, bool only_current, bool only_body = false, int hover_id = -1, bool render_cali = false, bool show_grid = true);
     //BBS: add outline drawing logic
     void _render_objects(GLVolumeCollection::ERenderType type, bool with_outline = true);
+    // ATN: pre-slice mid-air / unsupported-overhang markers.
+    void _build_midair_markers();
+    void _render_midair_markers();
     //BBS: GUI refactor: add canvas size as parameters
     void _render_gcode(int canvas_width, int canvas_height);
     //BBS: render a plane for assemble
