@@ -1,8 +1,5 @@
 #include "Orient.hpp"
 #include "Geometry.hpp"
-#include <Eigen/Geometry>
-#include <cfloat>
-#include <cmath>
 #include <numeric>
 #include <ClipperUtils.hpp>
 #include <boost/geometry/index/rtree.hpp>
@@ -36,10 +33,6 @@ namespace orientation {
         float contour;
         float area_laf;  // area_of_low_angle_faces
         float area_projected; // area of projected 2D profile
-        float area_support; // ATN: true surface area (mm^2) needing support at this orientation
-        float support_volume; // ATN: swept support volume (mm^3) under overhangs to the bed
-        float height;       // ATN: build height (mm) along the orientation axis
-        float footprint_excess; // ATN: mm by which the XY footprint overflows the bed (0 = fits)
         float volume;
         float area_total;  // total area of all faces
         float radius;    // radius of bounding box
@@ -48,12 +41,12 @@ namespace orientation {
         CostItems(CostItems const & other) = default;
         CostItems() { memset(this, 0, sizeof(*this)); }
         static std::string field_names() {
-            return "                                      A_support, bottom, height, fit_excess, unprintability";
+            return "                                      overhang, bottom, bothull, contour, A_laf, A_prj, unprintability";
         }
         std::string field_values() {
             std::stringstream ss;
             ss << std::fixed << std::setprecision(1);
-            ss << area_support << ",\t" << bottom << ",\t" << height << ",\t" << footprint_excess << ",\t" << unprintability;
+            ss << overhang << ",\t" << bottom << ",\t" << bottom_hull << ",\t" << contour << ",\t" << area_laf << ",\t" << area_projected << ",\t" << unprintability;
             return ss.str();
         }
     };
@@ -159,60 +152,28 @@ public:
         std::vector<PAIR> results_vector(results.begin(), results.end());
         sort(results_vector.begin(), results_vector.end(), [](const PAIR& p1, const PAIR& p2) {return p1.second.unprintability < p2.second.unprintability; });
 
-        // ATN: local refinement. Every candidate above is flat-on-a-face or
-        // axis-aligned, but the real optimum is frequently an in-between tilt — e.g.
-        // tipping the part ~45 deg so its overhangs sit right at the support-threshold
-        // angle and self-support, giving less support AND fewer layers than any flat
-        // pose. Starting from the best few discrete candidates, run a compass search
-        // over the orientation sphere, descending the SAME cost function to a
-        // continuous optimum. It only accepts strict improvements, so it can never
-        // make the discrete result worse; an eval budget caps the work on dense meshes.
-        auto eval_cost = [&](const Vec3f& dir) -> float {
-            project_vertices(dir);
-            CostItems ci = get_features(dir, params.min_volume);
-            return target_function(ci, params.min_volume);
-        };
-        int eval_budget = 600;
-        auto refine = [&](Vec3f dir, float c0) -> std::pair<Vec3f, float> {
-            Vec3f best_d = dir.normalized();
-            float best_c = c0;
-            for (float step = 20.f; step >= 1.f && eval_budget > 0; step *= 0.5f) {
-                bool improved = true;
-                int guard = 0;
-                while (improved && guard++ < 8 && eval_budget > 0) {
-                    improved = false;
-                    const Vec3f d   = best_d;
-                    const Vec3f ref = std::abs(d.z()) < 0.9f ? Vec3f(0, 0, 1) : Vec3f(1, 0, 0);
-                    const Vec3f ax1 = d.cross(ref).normalized();
-                    const Vec3f ax2 = d.cross(ax1).normalized();
-                    const float rad = step * float(PI) / 180.f;
-                    const Vec3f cand[4] = {
-                        Eigen::AngleAxisf( rad, ax1) * d, Eigen::AngleAxisf(-rad, ax1) * d,
-                        Eigen::AngleAxisf( rad, ax2) * d, Eigen::AngleAxisf(-rad, ax2) * d };
-                    for (Vec3f t : cand) {
-                        if (eval_budget-- <= 0) break;
-                        t.normalize();
-                        const float c = eval_cost(t);
-                        if (c < best_c - 1e-3f) { best_c = c; best_d = t; improved = true; }
-                    }
-                }
-            }
-            return { best_d, best_c };
-        };
-
-        Vec3f best_orientation = results_vector[0].first;
-        float best_cost        = results_vector[0].second.unprintability;
-        const int K = std::min((int)results_vector.size(), 4);
-        for (int i = 0; i < K && eval_budget > 0; i++) {
-            auto r = refine(results_vector[i].first, results_vector[i].second.unprintability);
-            if (r.second < best_cost - 1e-3f) { best_cost = r.second; best_orientation = r.first; }
-        }
-
         if (progressind)
             progressind(80);
 
-        BOOST_LOG_TRIVIAL(info) << std::fixed << std::setprecision(4)
-            << "ATN orient best (refined): " << best_orientation.transpose() << " cost=" << best_cost;
+        //To avoid flipping, we need to verify if there are orientations with same unprintability.
+        Vec3f n1 = {0, 0, 1};
+        auto best_orientation = results_vector[0].first;
+
+        for (int i = 1; i< results_vector.size()-1; i++) {
+            if (abs(results_vector[i].second.unprintability - results_vector[0].second.unprintability) < EPSILON && abs(results_vector[0].first.dot(n1)-1) > EPSILON) {
+                if (abs(results_vector[i].first.dot(n1)-1) < EPSILON*EPSILON) { 
+                    best_orientation = n1;
+                    break; 
+                }
+            }
+            else {
+                break;
+            }
+
+        }
+
+        BOOST_LOG_TRIVIAL(info) << std::fixed << std::setprecision(6) << "best:" << best_orientation.transpose() << ", costs:" << results_vector[0].second.field_values();
+        std::cout << std::fixed << std::setprecision(6) << "best:" << best_orientation.transpose() << ", costs:" << results_vector[0].second.field_values() << std::endl;
 
         return best_orientation.cast<double>();
     }
@@ -449,22 +410,6 @@ public:
             costs.overhang = overhang_areas.array().cwiseAbs().sum();
         }
 
-        // ATN: the literal surface area (mm^2) that overhangs beyond the user's
-        // support-threshold angle and is not resting on the bed. This is what the
-        // rewritten objective minimises. Uses real face areas (not the
-        // appearance-weighted ones) so it is the true area a slicer would support.
-        costs.area_support = ((normal_projection.array() < params.ASCENT) * (!bottom_condition_2nd)).select(areas, 0).sum();
-
-        // ATN: swept support volume (mm^3) under those overhangs, for the print-time
-        // objective. Per overhang face: horizontal projected area (area * |n . up|)
-        // times its height above the bed (the support column reaches down to the
-        // plate, worst case). Summed, this is proportional to the support material
-        // a slicer would lay down at this orientation/angle.
-        Eigen::ArrayXf supp_col = areas.array() * normal_projection.array().abs()
-                                  * (z_mean.array() - total_min_z).max(0.0f);
-        costs.support_volume = ((normal_projection.array() < params.ASCENT) * (!bottom_condition_2nd))
-                                 .select(supp_col, 0.0f).sum();
-
         {
             // contour perimeter
 #if 1
@@ -500,125 +445,24 @@ public:
         //float total_max_z = z_projected.maxCoeff();
         //costs.height_to_bottom_hull_ratio = SQ(total_max_z) / (costs.bottom_hull + 1e-7);
 
-        // ATN: bed-fit footprint. The part's footprint is its extent in the
-        // plane perpendicular to the (downward) orientation; the part can rotate
-        // freely about Z when arranged, so we align the measuring axes with the
-        // footprint's principal axes (PCA) to approximate the minimal rectangle.
-        // Also penalise height that exceeds the printer's build height (so a
-        // part doesn't get stood on end taller than the machine can print).
-        costs.height = z_projected.maxCoeff() - total_min_z; // extent along the orientation axis
-        float height_excess = 0.f;
-        if (params.bed_size_z > 0.f)
-            height_excess = std::max(0.f, costs.height - (params.bed_size_z - params.BED_MARGIN));
-        costs.footprint_excess = bed_footprint_excess(orientation) + height_excess;
-
         return costs;
     }
 
-    // Returns mm by which the oriented footprint overflows the bed (0 = fits).
-    float bed_footprint_excess(const Vec3f& down)
+    float target_function(CostItems& costs, bool min_volume)
     {
-        if (params.bed_size_x <= 0.f || params.bed_size_y <= 0.f)
-            return 0.f;
-        const std::vector<stl_vertex>& verts = mesh_convex_hull.its.vertices; // hull bounds the part, far fewer points
-        if (verts.size() < 3)
-            return 0.f;
-
-        Vec3f o = down.normalized();
-        Vec3f ref = std::abs(o.z()) < 0.9f ? Vec3f(0, 0, 1) : Vec3f(1, 0, 0);
-        Vec3f u0 = o.cross(ref).normalized();
-        Vec3f v0 = o.cross(u0).normalized();
-
-        double sa = 0, sb = 0;
-        for (const stl_vertex& p : verts) { sa += p.dot(u0); sb += p.dot(v0); }
-        const double n = double(verts.size());
-        const double ma = sa / n, mb = sb / n;
-        double saa = 0, sab = 0, sbb = 0;
-        for (const stl_vertex& p : verts) {
-            const double a = p.dot(u0) - ma, b = p.dot(v0) - mb;
-            saa += a * a; sab += a * b; sbb += b * b;
+        float cost=0;
+        float bottom = costs.bottom;//std::min(costs.bottom, params.BOTTOM_MAX);
+        float bottom_hull = costs.bottom_hull;// std::min(costs.bottom_hull, params.BOTTOM_HULL_MAX);
+        if (min_volume)
+        {
+            float overhang = costs.overhang / 25;
+            cost = params.TAR_A * (overhang + params.TAR_B) + params.RELATIVE_F * (/*costs.volume/100*/overhang*params.TAR_C + params.TAR_D + params.TAR_LAF * costs.area_laf * params.use_low_angle_face) / (params.TAR_D + params.CONTOUR_F * costs.contour + params.BOTTOM_F * bottom + params.BOTTOM_HULL_F * bottom_hull + params.TAR_E * overhang + params.TAR_PROJ_AREA * costs.area_projected);
         }
-        const double theta = 0.5 * std::atan2(2.0 * sab, saa - sbb);
-        const Vec3f u = (float)std::cos(theta) * u0 + (float)std::sin(theta) * v0;
-        const Vec3f v = (float)-std::sin(theta) * u0 + (float)std::cos(theta) * v0;
-
-        float umin = FLT_MAX, umax = -FLT_MAX, vmin = FLT_MAX, vmax = -FLT_MAX;
-        for (const stl_vertex& p : verts) {
-            const float a = p.dot(u), b = p.dot(v);
-            umin = std::min(umin, a); umax = std::max(umax, a);
-            vmin = std::min(vmin, b); vmax = std::max(vmax, b);
+        else {
+            float overhang = costs.overhang;
+            cost = params.RELATIVE_F * (costs.overhang * params.TAR_C + params.TAR_D + params.TAR_LAF * costs.area_laf * params.use_low_angle_face) / (params.TAR_D + params.CONTOUR_F * costs.contour + params.BOTTOM_F * bottom + params.BOTTOM_HULL_F * bottom_hull + params.TAR_PROJ_AREA * costs.area_projected);
         }
-        const float flong = std::max(umax - umin, vmax - vmin);
-        const float fshort = std::min(umax - umin, vmax - vmin);
-
-        const float blong = std::max(params.bed_size_x, params.bed_size_y) - params.BED_MARGIN;
-        const float bshort = std::min(params.bed_size_x, params.bed_size_y) - params.BED_MARGIN;
-
-        return std::max(0.f, flong - blong) + std::max(0.f, fshort - bshort);
-    }
-
-    // ATN rewrite: choose the orientation that needs the least support, while
-    // staying inside the build volume.
-    //
-    //   Primary objective  — minimise the part's surface area (mm^2) that
-    //                        overhangs beyond the user's support-threshold angle
-    //                        (OrientMesh::overhang_angle, e.g. 30 deg) and would
-    //                        therefore need support material.
-    //   Hard constraint    — the oriented part must fit the printer's X, Y and Z.
-    //                        An orientation that overflows the plate or exceeds
-    //                        the build height is rejected outright, no matter how
-    //                        little support it needs.
-    //   Tie-breakers       — among orientations with near-equal support area,
-    //                        prefer more bed contact (stability/adhesion) and a
-    //                        lower build height (stability, headroom). These are
-    //                        deliberately small so they never override the
-    //                        primary support-area objective.
-    float target_function(CostItems& costs, bool /*min_volume*/)
-    {
-        const float BOTTOM_REWARD  = 0.01f; // per mm^2 of first-layer bed contact
-        const float HEIGHT_PENALTY = 0.10f; // per mm of build height
-
-        float cost;
-        if (params.objective == 1) {
-            // ATN: minimise print time as an actual time estimate (seconds), so the
-            // flat-vs-support trade-off is computed, not weighted by a fudge factor:
-            //
-            //   T ~= layers * t_layer  +  support_material_volume / Q
-            //
-            //   layers = build height / layer height            (taller => slower)
-            //   support_volume = swept volume under overhangs at the chosen angle,
-            //                    times a sparse-support density  (more overhang => slower)
-            //   t_layer = fixed per-layer overhead (z-hop + travel + accel ramps)
-            //   Q       = volumetric flow rate of the nozzle
-            //
-            // Only the orientation-dependent terms matter for ranking; the part's own
-            // extrusion time is ~constant across orientations and drops out.
-            const float t_layer    = 0.8f;   // s of overhead per layer
-            const float support_d  = 0.12f;  // sparse support infill fraction
-            const float Q          = 8.0f;   // mm^3/s volumetric flow
-            const float lh         = params.layer_height > 0.f ? params.layer_height : 0.2f;
-
-            const float t_layers  = (costs.height / lh) * t_layer;
-            const float t_support = (costs.support_volume * support_d) / Q;
-            cost = t_layers + t_support;
-        } else {
-            // ATN: minimise support area (default) at the user's overhang angle, with
-            // bed-contact reward and a small height penalty as tie-breaks.
-            cost = costs.area_support
-                 - BOTTOM_REWARD  * costs.bottom
-                 + HEIGHT_PENALTY * costs.height;
-        }
-
-        // A part with essentially no bed contact will topple or fail to adhere;
-        // keep it out of contention even if its support area is low.
-        if (costs.bottom < params.BOTTOM_MIN)
-            cost += 1000.f;
-
-        // Build-volume fit is a hard constraint: footprint_excess already folds
-        // in both the XY overflow and the Z over-height. Reject non-fitting
-        // orientations; among them, prefer the least overflow.
-        if (costs.footprint_excess > 0.f)
-            cost += params.BED_FIT_PENALTY + costs.footprint_excess;
+        cost += (costs.bottom < params.BOTTOM_MIN) * 100;// +(costs.height_to_bottom_hull_ratio > params.height_to_bottom_hull_ratio_MIN) * 110;
 
         costs.unprintability = cost;
 

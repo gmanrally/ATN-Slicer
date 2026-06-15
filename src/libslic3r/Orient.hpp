@@ -135,23 +135,6 @@ struct OrientParams {
     /// A predicate returning true if abort is needed.
     std::function<bool(void)>     stopcondition = {};
 
-    // ATN: bed-fit awareness — kept as trailing PODs so OrientJob's struct-copy
-    // (memcpy from OrientParamsArea) never shifts the std::function members above.
-    // An orientation whose XY footprint exceeds the plate is heavily penalised so
-    // auto-orient never picks an unprintable lay-down. 0 = disabled.
-    float bed_size_x = 0.f;
-    float bed_size_y = 0.f;
-    float bed_size_z = 0.f;           // printable height (0 = disabled)
-    float BED_FIT_PENALTY = 1000.f;   // flat cost added to any non-fitting orientation
-    float BED_MARGIN = 5.f;           // mm kept clear of the plate edge
-
-    // ATN: orientation objective. 0 = minimise support area (default); 1 = minimise
-    // print time (computed from layer count + support volume). Trailing POD so
-    // OrientJob's struct-copy never shifts the std::function members above; set by
-    // OrientJob after the copy.
-    int   objective = 0;
-    float layer_height = 0.2f;   // mm, from the active process preset (for layer count)
-
     OrientParams() = default;
 };
 

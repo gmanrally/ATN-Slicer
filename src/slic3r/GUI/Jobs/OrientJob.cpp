@@ -1,9 +1,7 @@
 #include "OrientJob.hpp"
 
 #include "libslic3r/Model.hpp"
-#include "libslic3r/BuildVolume.hpp"
 #include "slic3r/GUI/Plater.hpp"
-#include <boost/log/trivial.hpp>
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/NotificationManager.hpp"
@@ -172,59 +170,6 @@ void OrientJob::process(Ctl &ctl)
         params.min_volume = true;
     }
 
-    // ATN: feed the plate size in (set AFTER the struct-copy above, where the
-    // bed fields are trailing PODs) so auto-orient rejects any orientation whose
-    // footprint won't fit the bed. Reset the weights too — in min_area mode the
-    // memcpy above reads past OrientParamsArea and garbles these trailing fields.
-    params.BED_FIT_PENALTY = 1000.f;
-    params.BED_MARGIN = 5.f;
-    params.bed_size_x = 0.f;
-    params.bed_size_y = 0.f;
-    params.bed_size_z = 0.f;
-    // Prefer the actual build volume (authoritative, in mm) — a plain config read of
-    // printable_area is not always populated in the plater config, which would leave
-    // the bed at 0 and silently disable the fit constraint.
-    {
-        const BuildVolume& bv = m_plater->build_volume();
-        const Vec3d sz = bv.bounding_volume().size();
-        if (sz.x() > 1.0 && sz.y() > 1.0) {
-            params.bed_size_x = float(sz.x());
-            params.bed_size_y = float(sz.y());
-        }
-        if (bv.printable_height() > 1.0)
-            params.bed_size_z = float(bv.printable_height());
-    }
-    if (const DynamicPrintConfig* cfg = m_plater->config()) {
-        if (params.bed_size_x <= 0.f || params.bed_size_y <= 0.f) {
-            if (auto* pa = cfg->opt<ConfigOptionPoints>("printable_area")) {
-                double xmin = 1e9, xmax = -1e9, ymin = 1e9, ymax = -1e9;
-                for (const Vec2d& p : pa->values) {
-                    xmin = std::min(xmin, p.x()); xmax = std::max(xmax, p.x());
-                    ymin = std::min(ymin, p.y()); ymax = std::max(ymax, p.y());
-                }
-                if (xmax > xmin && ymax > ymin) {
-                    params.bed_size_x = float(xmax - xmin);
-                    params.bed_size_y = float(ymax - ymin);
-                }
-            }
-        }
-        if (params.bed_size_z <= 0.f) {
-            if (auto* ph = cfg->opt<ConfigOptionFloat>("printable_height"))
-                if (ph->value > 0) params.bed_size_z = float(ph->value);
-        }
-    }
-    BOOST_LOG_TRIVIAL(info) << "ATN auto-orient bed extents (mm): x=" << params.bed_size_x
-                            << " y=" << params.bed_size_y << " z=" << params.bed_size_z
-                            << " objective=" << (settings.min_time ? "min_time" : "min_support");
-
-    // ATN: orientation objective chosen in the auto-orient pop-up (trailing POD,
-    // set after the struct-copy above). 1 = minimise print time, 0 = min support.
-    params.objective = settings.min_time ? 1 : 0;
-    if (const DynamicPrintConfig* cfg = m_plater->config()) {
-        if (auto* lh = cfg->opt<ConfigOptionFloat>("layer_height"))
-            if (lh->value > 0.0) params.layer_height = float(lh->value);
-    }
-
     auto count = unsigned(m_selected.size() + m_unprintable.size());
     params.stopcondition = [&ctl]() { return ctl.was_canceled(); };
 
@@ -232,11 +177,6 @@ void OrientJob::process(Ctl &ctl)
         st += m_unprintable.size();
         if (st > 0) ctl.update_status(int(st / float(count) * 100), _u8L("Orienting") + " " + orientstr);
     };
-
-    // ATN: apply the overhang angle chosen in the auto-orient pop-up to every
-    // object, overriding the per-object support_threshold_angle default.
-    for (auto& om : m_selected)
-        om.overhang_angle = settings.overhang_angle;
 
     orientation::orient(m_selected, m_unselected, params);
 
