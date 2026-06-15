@@ -5801,6 +5801,21 @@ bool GLCanvas3D::_render_orient_menu(float left, float right, float bottom, floa
 
     imgui->begin(_L("Auto Orientation options"), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse);
 
+    // ATN: high-contrast styling so the radios/checkbox and the slider handle are
+    // clearly visible — the default toolbar style washes them out.
+    const ImVec4 atn_teal   = ImVec4(0.10f, 0.66f, 0.66f, 1.0f);
+    const ImVec4 atn_tealA  = ImVec4(0.04f, 0.45f, 0.45f, 1.0f);
+    const ImVec4 atn_frame  = m_is_dark ? ImVec4(0.22f, 0.24f, 0.24f, 1.0f) : ImVec4(0.86f, 0.90f, 0.90f, 1.0f);
+    const ImVec4 atn_frameH = m_is_dark ? ImVec4(0.30f, 0.34f, 0.34f, 1.0f) : ImVec4(0.76f, 0.84f, 0.84f, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg,          atn_frame);
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered,   atn_frameH);
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive,    atn_frameH);
+    ImGui::PushStyleColor(ImGuiCol_CheckMark,        atn_teal);
+    ImGui::PushStyleColor(ImGuiCol_SliderGrab,       atn_teal);
+    ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, atn_tealA);
+    ImGui::PushStyleVar(ImGuiStyleVar_GrabMinSize,    16.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+
     OrientSettings settings = get_orient_settings();
     OrientSettings& settings_out = get_orient_settings();
 
@@ -5877,6 +5892,8 @@ bool GLCanvas3D::_render_orient_menu(float left, float right, float bottom, floa
         settings_changed = true;
     }
 
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(6);
     imgui->end();
     ImGuiWrapper::pop_toolbar_style();
     return settings_changed;

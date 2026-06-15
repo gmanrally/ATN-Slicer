@@ -1,5 +1,6 @@
 #include "Orient.hpp"
 #include "Geometry.hpp"
+#include <Eigen/Geometry>
 #include <cfloat>
 #include <cmath>
 #include <numeric>
@@ -158,28 +159,60 @@ public:
         std::vector<PAIR> results_vector(results.begin(), results.end());
         sort(results_vector.begin(), results_vector.end(), [](const PAIR& p1, const PAIR& p2) {return p1.second.unprintability < p2.second.unprintability; });
 
+        // ATN: local refinement. Every candidate above is flat-on-a-face or
+        // axis-aligned, but the real optimum is frequently an in-between tilt — e.g.
+        // tipping the part ~45 deg so its overhangs sit right at the support-threshold
+        // angle and self-support, giving less support AND fewer layers than any flat
+        // pose. Starting from the best few discrete candidates, run a compass search
+        // over the orientation sphere, descending the SAME cost function to a
+        // continuous optimum. It only accepts strict improvements, so it can never
+        // make the discrete result worse; an eval budget caps the work on dense meshes.
+        auto eval_cost = [&](const Vec3f& dir) -> float {
+            project_vertices(dir);
+            CostItems ci = get_features(dir, params.min_volume);
+            return target_function(ci, params.min_volume);
+        };
+        int eval_budget = 600;
+        auto refine = [&](Vec3f dir, float c0) -> std::pair<Vec3f, float> {
+            Vec3f best_d = dir.normalized();
+            float best_c = c0;
+            for (float step = 20.f; step >= 1.f && eval_budget > 0; step *= 0.5f) {
+                bool improved = true;
+                int guard = 0;
+                while (improved && guard++ < 8 && eval_budget > 0) {
+                    improved = false;
+                    const Vec3f d   = best_d;
+                    const Vec3f ref = std::abs(d.z()) < 0.9f ? Vec3f(0, 0, 1) : Vec3f(1, 0, 0);
+                    const Vec3f ax1 = d.cross(ref).normalized();
+                    const Vec3f ax2 = d.cross(ax1).normalized();
+                    const float rad = step * float(PI) / 180.f;
+                    const Vec3f cand[4] = {
+                        Eigen::AngleAxisf( rad, ax1) * d, Eigen::AngleAxisf(-rad, ax1) * d,
+                        Eigen::AngleAxisf( rad, ax2) * d, Eigen::AngleAxisf(-rad, ax2) * d };
+                    for (Vec3f t : cand) {
+                        if (eval_budget-- <= 0) break;
+                        t.normalize();
+                        const float c = eval_cost(t);
+                        if (c < best_c - 1e-3f) { best_c = c; best_d = t; improved = true; }
+                    }
+                }
+            }
+            return { best_d, best_c };
+        };
+
+        Vec3f best_orientation = results_vector[0].first;
+        float best_cost        = results_vector[0].second.unprintability;
+        const int K = std::min((int)results_vector.size(), 4);
+        for (int i = 0; i < K && eval_budget > 0; i++) {
+            auto r = refine(results_vector[i].first, results_vector[i].second.unprintability);
+            if (r.second < best_cost - 1e-3f) { best_cost = r.second; best_orientation = r.first; }
+        }
+
         if (progressind)
             progressind(80);
 
-        //To avoid flipping, we need to verify if there are orientations with same unprintability.
-        Vec3f n1 = {0, 0, 1};
-        auto best_orientation = results_vector[0].first;
-
-        for (int i = 1; i< results_vector.size()-1; i++) {
-            if (abs(results_vector[i].second.unprintability - results_vector[0].second.unprintability) < EPSILON && abs(results_vector[0].first.dot(n1)-1) > EPSILON) {
-                if (abs(results_vector[i].first.dot(n1)-1) < EPSILON*EPSILON) { 
-                    best_orientation = n1;
-                    break; 
-                }
-            }
-            else {
-                break;
-            }
-
-        }
-
-        BOOST_LOG_TRIVIAL(info) << std::fixed << std::setprecision(6) << "best:" << best_orientation.transpose() << ", costs:" << results_vector[0].second.field_values();
-        std::cout << std::fixed << std::setprecision(6) << "best:" << best_orientation.transpose() << ", costs:" << results_vector[0].second.field_values() << std::endl;
+        BOOST_LOG_TRIVIAL(info) << std::fixed << std::setprecision(4)
+            << "ATN orient best (refined): " << best_orientation.transpose() << " cost=" << best_cost;
 
         return best_orientation.cast<double>();
     }
