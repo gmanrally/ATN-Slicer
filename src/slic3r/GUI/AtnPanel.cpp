@@ -116,6 +116,12 @@ void AtnPanel::on_script_message(wxWebViewEvent& evt)
             handle_set_setting(root["data"]["key"].get<std::string>(), root["data"]["value"].get<std::string>());
         } else if (command == "atn_request_preflight") {
             handle_request_preflight();
+        } else if (command == "atn_reslice") {
+            // Re-slice on demand (e.g. the panel's "re-slice & re-check" button
+            // after the user applied a recommendation). A successful slice fires
+            // on_slice_complete(), which tells the page to re-run pre-flight.
+            if (auto* p = wxGetApp().plater())
+                p->reslice();
         } else if (command == "atn_capture_model") {
             handle_capture_model();
         } else if (command == "atn_apply_optimized") {

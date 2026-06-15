@@ -229,9 +229,18 @@ AboutDialog::AboutDialog()
 
 	bool is_dark = wxGetApp().app_config->get("dark_color_mode") == "1";
 
-    // logo
-    m_logo_bitmap = ScalableBitmap(this, is_dark ? "OrcaSlicer_about_dark" : "OrcaSlicer_about", 125);
-    m_logo = new wxStaticBitmap(this, wxID_ANY, m_logo_bitmap.bmp(), wxDefaultPosition,wxDefaultSize, 0);
+    // logo — ATN wordmark PNG (NanoSVG can't render the wordmark text, so the
+    // branded logo is a raster; fall back to the SVG mark if the PNG is missing).
+    wxImage about_img;
+    const std::string about_png = is_dark ? "atn_about_dark.png" : "atn_about.png";
+    if (about_img.LoadFile(from_u8(Slic3r::var(about_png)), wxBITMAP_TYPE_PNG) && about_img.IsOk()) {
+        const int h = FromDIP(125);
+        about_img.Rescale(about_img.GetWidth() * h / about_img.GetHeight(), h, wxIMAGE_QUALITY_HIGH);
+        m_logo = new wxStaticBitmap(this, wxID_ANY, wxBitmap(about_img), wxDefaultPosition, wxDefaultSize, 0);
+    } else {
+        m_logo_bitmap = ScalableBitmap(this, is_dark ? "OrcaSlicer_about_dark" : "OrcaSlicer_about", 125);
+        m_logo = new wxStaticBitmap(this, wxID_ANY, m_logo_bitmap.bmp(), wxDefaultPosition, wxDefaultSize, 0);
+    }
     m_logo->SetSizer(vesizer);
 
     panel_versizer->Add(m_logo, 1, wxALL | wxEXPAND, 0);
@@ -328,7 +337,7 @@ AboutDialog::AboutDialog()
               (boost::format(
               "<html>"
               "<body>"
-              "<p style=\"text-align:left\"><a style=\"color:#009789\" href=\"https://www.orcaslicer.com\">https://www.orcaslicer.com</ a></p>"
+              "<p style=\"text-align:left\"><a style=\"color:#0a8c8c\" href=\"https://www.orcaslicer.com\">https://www.orcaslicer.com</ a></p>"
               "</body>"
               "</html>")
             ).str());

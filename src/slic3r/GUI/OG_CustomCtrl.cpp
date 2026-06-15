@@ -957,7 +957,7 @@ wxCoord OG_CustomCtrl::CtrlLine::draw_text(wxDC &dc, wxPoint pos, const wxString
 
         wxColour old_clr = dc.GetTextForeground();
         wxFont old_font = dc.GetFont();
-        wxColor clr_url = StateColor::darkModeColorFor("#009688");
+        wxColor clr_url = StateColor::darkModeColorFor("#0a8c8c");
         if (is_focused && is_url) {
         // temporary workaround for the OSX because of strange Bold font behavior on BigSerf
 #ifdef __APPLE__
