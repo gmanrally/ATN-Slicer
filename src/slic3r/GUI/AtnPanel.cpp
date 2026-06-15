@@ -23,6 +23,7 @@
 #include <sstream>
 #include <wx/base64.h>
 #include <wx/sizer.h>
+#include <wx/utils.h>
 #include <wx/webview.h>
 
 using json = nlohmann::json;
@@ -52,6 +53,14 @@ AtnPanel::AtnPanel(wxWindow* parent)
     SetSizer(sizer);
 
     m_browser->Bind(wxEVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, &AtnPanel::on_script_message, this);
+
+    // Open external links (target="_blank", e.g. the Upgrade / subscribe link) in
+    // the user's default browser instead of navigating the panel away from the
+    // assistant.
+    m_browser->Bind(wxEVT_WEBVIEW_NEWWINDOW, [](wxWebViewEvent& evt) {
+        if (!evt.GetURL().empty())
+            wxLaunchDefaultBrowser(evt.GetURL());
+    });
 }
 
 void AtnPanel::load_url(const wxString& url)
