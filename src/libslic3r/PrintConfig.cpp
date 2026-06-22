@@ -3458,7 +3458,16 @@ void PrintConfigDef::init_fff_params()
     def->max = 100;
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionInts{ -1 });
-    
+
+    // Orca/ATN: scope the support-interface fan to just the top contact layer.
+    def = this->add("support_material_interface_fan_top_only", coBools);
+    def->label = L("Top interface layer only");
+    def->tooltip = L("When enabled, the support interface fan speed above is applied only to the TOP contact layer "
+                     "(the one directly under the model), not to every support-interface layer below it. "
+                     "Disable to fan all support-interface layers (the standard behaviour).");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBools{ true });
+
     // ORCA: Add support for separate internal bridge fan speed control
     def = this->add("internal_bridge_fan_speed", coInts);
     def->label = L("Internal bridges fan speed");
@@ -4404,6 +4413,150 @@ void PrintConfigDef::init_fff_params()
     def->max      = 100;
     def->mode     = comExpert;
     def->set_default_value(new ConfigOptionFloat(0.05));
+
+    // ATN: Woven walls
+    def = this->add("woven_walls_enabled", coBool);
+    def->label    = L("Woven walls");
+    def->category = L("Strength");
+    def->tooltip  = L("Modulate wall (perimeter) Z height by a small sinusoid so layers "
+                      "interlock in both XY and Z, improving inter-layer strength and "
+                      "sealing. Top and bottom solid surfaces are left flat. Walls only.");
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("woven_walls_nested", coBool);
+    def->label    = L("Nested (antiphase) layers");
+    def->category = L("Strength");
+    def->tooltip  = L("On: each layer is the antiphase of the one below, so a peak nests "
+                      "over a trough (egg-carton interlock; amplitude is auto-limited to "
+                      "avoid gaps). Off: corrugated - every layer rides the same wave "
+                      "(constant gap, never voids, allows larger amplitude).");
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(true));
+
+    def = this->add("woven_walls_interwall", coBool);
+    def->label    = L("Antiphase adjacent walls");
+    def->category = L("Strength");
+    def->tooltip  = L("Offset neighbouring perimeter loops in antiphase so adjacent "
+                      "walls nest into each other (interlocks the walls together, not "
+                      "just the layers). Amplitude is auto-limited when on, as for "
+                      "nested layers, to keep the walls bonded.");
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(true));
+
+    def = this->add("woven_wall_amplitude", coFloat);
+    def->label    = L("Weave amplitude");
+    def->category = L("Strength");
+    def->tooltip  = L("Z amplitude of the weave, as a fraction of layer height.");
+    def->min      = 0;
+    def->max      = 0.5;
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0.3));
+
+    def = this->add("woven_wall_wavelength", coFloat);
+    def->label    = L("Weave wavelength");
+    def->category = L("Strength");
+    def->tooltip  = L("Distance along the wall for one full Z wave.");
+    def->sidetext = L("mm");
+    def->min      = 0.5;
+    def->max      = 50;
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(4));
+
+    def = this->add("woven_wall_max_sep", coFloat);
+    def->label    = L("Max layer separation");
+    def->category = L("Strength");
+    def->tooltip  = L("Nested mode only: the largest inter-layer gap the weave may open, "
+                      "as a fraction of layer height. Weave amplitude is clamped to keep "
+                      "beads bonded (prevents lens-shaped voids).");
+    def->min      = 0;
+    def->max      = 1;
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0.3));
+
+    def = this->add("woven_wall_edge_taper", coInt);
+    def->label    = L("Edge taper layers");
+    def->category = L("Strength");
+    def->tooltip  = L("Fade the weave to flat over this many layers wherever a wall "
+                      "reaches the top or bottom of the model (or a step), so top "
+                      "surfaces stay sealed and the base isn't disturbed. 0 disables.");
+    def->sidetext = L("layers");
+    def->min      = 0;
+    def->max      = 50;
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(4));
+
+    def = this->add("woven_wall_skip_outer", coInt);
+    def->label    = L("Keep outer walls planar");
+    def->category = L("Strength");
+    def->tooltip  = L("Number of walls counted from the OUTSIDE surface inward to leave "
+                      "flat (not reshaped), so the visible outside stays smooth. e.g. 1 "
+                      "keeps just the outermost wall planar. 0 = reshape all the way out.");
+    def->sidetext = L("walls");
+    def->min      = 0;
+    def->max      = 20;
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(0));
+
+    def = this->add("woven_wall_skip_inner", coInt);
+    def->label    = L("Keep inner walls planar");
+    def->category = L("Strength");
+    def->tooltip  = L("Number of walls counted from the INNERMOST perimeter outward to "
+                      "leave flat, so an internal/cavity surface stays smooth. e.g. 1 "
+                      "keeps just the innermost wall planar. 0 = reshape all the way in.");
+    def->sidetext = L("walls");
+    def->min      = 0;
+    def->max      = 20;
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(0));
+
+    def = this->add("woven_wall_flow_ratio", coFloat);
+    def->label    = L("Modified-wall flow ratio");
+    def->category = L("Strength");
+    def->tooltip  = L("Extra extrusion multiplier applied ONLY to the reshaped (woven or "
+                      "brick) walls, leaving every other wall at normal flow. Push above "
+                      "1.0 to over-extrude the interlocking walls and fill the nooks for a "
+                      "denser, more watertight bond; below 1.0 to avoid bulging. 1.0 = off.");
+    def->min      = 0.5;
+    def->max      = 2.0;
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(1.0));
+
+    // ATN: Brick layers (staggered perimeter shells)
+    def = this->add("brick_layers_enabled", coBool);
+    def->label    = L("Brick layers");
+    def->category = L("Strength");
+    def->tooltip  = L("Shift every other perimeter shell up by a constant fraction of a "
+                      "layer height so the layer seams of neighbouring walls stagger like "
+                      "brickwork, removing the continuous through-thickness weak seam. "
+                      "Use alone, or ON TOP of woven walls to get non-antiphase wavy walls "
+                      "that are also brick-staggered. Walls only; fades to flat at the "
+                      "top/bottom (see Edge taper layers).");
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("brick_layer_offset", coFloat);
+    def->label    = L("Brick offset");
+    def->category = L("Strength");
+    def->tooltip  = L("Z shift applied to alternate perimeter shells, as a fraction of "
+                      "layer height. 0.5 (half a layer) is the classic brick bond.");
+    def->min      = 0;
+    def->max      = 0.5;
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0.5));
+
+    def = this->add("brick_layer_flow", coFloat);
+    def->label    = L("Brick flow");
+    def->category = L("Strength");
+    def->tooltip  = L("Extrusion multiplier applied to the shifted (staggered) brick shells, "
+                      "to pack the half-layer-offset bond. 1.0 = no change; ~1.05-1.15 fills "
+                      "the brick interface for stronger, more watertight walls. (The top/bottom "
+                      "boundary is handled by Edge taper layers, so no first/last-layer tweak "
+                      "is needed.)");
+    def->min      = 0.5;
+    def->max      = 2;
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(1.0));
 
     def = this->add("layer_change_gcode", coString);
     def->label = L("Layer change G-code");

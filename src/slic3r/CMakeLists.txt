@@ -737,6 +737,19 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/GeneratedConfig.hpp.in
                ${CMAKE_CURRENT_BINARY_DIR}/GeneratedConfig.hpp
                @ONLY)
 
+# ATN: internal-only farm integration ("Send to Farm"). OFF for public installers,
+# so the feature is physically absent from the shipped binary. Internal builds pass
+# -DATN_FARM_TOOLS=ON to compile it in. The interface-fan + slicing features always ship.
+option(ATN_FARM_TOOLS "Build internal printer-farm integration (Send to Farm)" OFF)
+if (ATN_FARM_TOOLS)
+    list(APPEND SLIC3R_GUI_SOURCES GUI/SendToFarmDialog.cpp GUI/SendToFarmDialog.hpp)
+endif ()
+
+# ATN: show the Woven walls / Brick layers UI. OFF for public installers (the
+# feature is still being tuned on complex geometry); dev/test builds pass
+# -DATN_WOVEN_UI=ON to expose the options in Quality.
+option(ATN_WOVEN_UI "Expose the Woven walls / Brick layers UI options" OFF)
+
 if (WIN32)
     add_library(libslic3r_gui STATIC
         ${SLIC3R_GUI_SOURCES}
@@ -747,6 +760,13 @@ if (WIN32)
     )
 else ()
     add_library(libslic3r_gui STATIC ${SLIC3R_GUI_SOURCES})
+endif ()
+
+if (ATN_FARM_TOOLS)
+    target_compile_definitions(libslic3r_gui PRIVATE ATN_FARM_TOOLS)
+endif ()
+if (ATN_WOVEN_UI)
+    target_compile_definitions(libslic3r_gui PRIVATE ATN_WOVEN_UI)
 endif ()
 target_include_directories(libslic3r_gui PRIVATE Utils ${CMAKE_CURRENT_BINARY_DIR})
 

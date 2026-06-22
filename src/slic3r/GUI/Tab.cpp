@@ -2383,6 +2383,29 @@ void TabPrint::build()
         // Orca: it's not used yet, so hide it in UI for now
         // optgroup->append_single_option_line("ironing_expansion");
 
+#ifdef ATN_WOVEN_UI
+        // ATN: Woven walls (Z-modulated perimeters for interlayer strength).
+        // Hidden in public releases (define ATN_WOVEN_UI in dev builds) until the
+        // registration is solid on complex/varying-cross-section geometry.
+        optgroup = page->new_optgroup(L("Woven walls"), L"param_advanced");
+        optgroup->append_single_option_line("woven_walls_enabled");
+        optgroup->append_single_option_line("woven_walls_nested");
+        optgroup->append_single_option_line("woven_walls_interwall");
+        optgroup->append_single_option_line("woven_wall_amplitude");
+        optgroup->append_single_option_line("woven_wall_wavelength");
+        optgroup->append_single_option_line("woven_wall_max_sep");
+        optgroup->append_single_option_line("woven_wall_edge_taper");
+        optgroup->append_single_option_line("woven_wall_skip_outer");
+        optgroup->append_single_option_line("woven_wall_skip_inner");
+        optgroup->append_single_option_line("woven_wall_flow_ratio");
+
+        // ATN: Brick layers (staggered perimeter shells) — alternative to woven walls
+        optgroup = page->new_optgroup(L("Brick layers"), L"param_advanced");
+        optgroup->append_single_option_line("brick_layers_enabled");
+        optgroup->append_single_option_line("brick_layer_offset");
+        optgroup->append_single_option_line("brick_layer_flow");
+#endif // ATN_WOVEN_UI
+
         optgroup = page->new_optgroup(L("Wall generator"), L"param_wall_generator");
         optgroup->append_single_option_line("wall_generator", "quality_settings_wall_generator");
         optgroup->append_single_option_line("wall_transition_angle", "quality_settings_wall_generator#wall-transitioning-threshhold-angle");
@@ -4082,6 +4105,7 @@ void TabFilament::build()
         optgroup->append_single_option_line("overhang_fan_speed", "material_cooling#overhangs-and-external-bridges-fan-speed");
         optgroup->append_single_option_line("internal_bridge_fan_speed", "material_cooling#internal-bridges-fan-speed"); // ORCA: Add support for separate internal bridge fan speed control
         optgroup->append_single_option_line("support_material_interface_fan_speed", "material_cooling#support-interface-fan-speed");
+        optgroup->append_single_option_line("support_material_interface_fan_top_only"); // Orca/ATN: fan top contact layer only vs all interface layers
         optgroup->append_single_option_line("ironing_fan_speed", "material_cooling#ironing-fan-speed"); // ORCA: Add support for ironing fan speed control
 
         optgroup = page->new_optgroup(L("Auxiliary part cooling fan"), L"param_cooling_aux_fan");

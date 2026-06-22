@@ -101,6 +101,7 @@ set(lisbslic3r_sources
     Config.cpp
     Config.hpp
     ContourZ.cpp
+    WovenWalls.cpp
     CustomGCode.cpp
     CustomGCode.hpp
     CutUtils.cpp

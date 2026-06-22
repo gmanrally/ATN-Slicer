@@ -10,6 +10,7 @@
 #include "Layer.hpp"
 #include "MutablePolygon.hpp"
 #include "PrintConfig.hpp"
+#include "QuadricEdgeCollapse.hpp"
 #include "SLA/IndexedMesh.hpp"
 #include "Support/SupportMaterial.hpp"
 #include "Support/SupportSpotsGenerator.hpp"
@@ -751,7 +752,8 @@ bool PrintObject::need_z_contouring() const
 {
     size_t num_regions = this->num_printing_regions();
     for (size_t region_id = 0; region_id < num_regions; region_id++) {
-        if (this->printing_region(region_id).config().zaa_enabled)
+        const PrintRegionConfig &c = this->printing_region(region_id).config();
+        if (c.zaa_enabled || c.woven_walls_enabled || c.brick_layers_enabled)
             return true;
     }
 
@@ -767,21 +769,96 @@ void PrintObject::contour_z()
     m_print->set_status(40, L("Z contouring"));
     BOOST_LOG_TRIVIAL(debug) << "Contouring in parallel - start";
 
-    TriangleMesh mesh = this->m_model_object->raw_mesh();
-    if (m_model_object->instances.size() != 1) {
-        throw RuntimeError("ContourZ: unexpected number of instances");
+    // Which contouring passes are needed? ZAA is mesh-based (single instance only);
+    // ATN woven walls are purely procedural and need no mesh.
+    bool need_zaa = false, need_weave = false;
+    for (size_t rid = 0; rid < this->num_printing_regions(); ++rid) {
+        const PrintRegionConfig &c = this->printing_region(rid).config();
+        need_zaa   |= c.zaa_enabled;
+        need_weave |= c.woven_walls_enabled || c.brick_layers_enabled;
     }
 
-    ModelInstance *inst = m_model_object->instances.front();
-    Point                    center_offset = this->center_offset();
-    Geometry::Transformation trans = inst->get_transformation();
+    std::unique_ptr<sla::IndexedMesh> imesh;
+    TriangleMesh                      mesh; // must outlive imesh: IndexedMesh keeps a pointer into mesh.its
+    if (need_zaa) {
+        mesh = this->m_model_object->raw_mesh();
+        if (m_model_object->instances.size() != 1) {
+            throw RuntimeError("ContourZ: unexpected number of instances");
+        }
+        ModelInstance *inst = m_model_object->instances.front();
+        Point                    center_offset = this->center_offset();
+        Geometry::Transformation trans = inst->get_transformation();
 
-    double z = this->m_model_object->min_z();
-    trans.set_offset(Vec3d(-unscale<double>(center_offset.x()), -unscale<double>(center_offset.y()), 0));
-    mesh.transform(trans.get_matrix());
+        double z = this->m_model_object->min_z();
+        trans.set_offset(Vec3d(-unscale<double>(center_offset.x()), -unscale<double>(center_offset.y()), 0));
+        mesh.transform(trans.get_matrix());
 
-    sla::IndexedMesh imesh(mesh);
-    imesh.ground_level_offset(-z);
+        // ZAA builds a per-triangle AABB search tree over this mesh and ray-casts it
+        // millions of times. A CAD-tessellated import (e.g. a multi-million-triangle
+        // STEP with large coplanar flat regions) makes libigl's median-split tree
+        // degenerate into a near-linear chain — its recursive build/descent then blows
+        // the stack and segfaults. Decimate dense meshes first: the flat fans collapse
+        // away (negligible shape error), the tree rebalances, and the queries speed up.
+        // ZAA only needs the coarse top-surface shape, so this is loss-free in practice.
+        const size_t kZaaMaxTris = 500000;
+        if (mesh.its.indices.size() > kZaaMaxTris) {
+            BOOST_LOG_TRIVIAL(info) << "ContourZ: simplifying mesh from " << mesh.its.indices.size()
+                                    << " to " << kZaaMaxTris << " triangles for the contour tree.";
+            m_print->set_status(40, L("Z contouring: simplifying mesh"));
+            its_quadric_edge_collapse(mesh.its, (uint32_t) kZaaMaxTris, nullptr,
+                                      [this]() { m_print->throw_if_canceled(); });
+            mesh = TriangleMesh(mesh.its); // refresh bbox/stats from the decimated set
+        }
+
+        imesh = std::make_unique<sla::IndexedMesh>(mesh);
+        imesh->ground_level_offset(-z);
+    }
+
+    // ATN: fix the woven-wall cycle count ONCE from a representative perimeter, so
+    // every layer/wall uses the same number of waves. Recomputing it per layer let
+    // tessellation noise in the perimeter length flip the count between layers,
+    // which misaligned the wave and opened periodic void bands.
+    // ATN: also fix the woven-wall angle CENTRE here (the largest cross-section's
+    // centroid, taken once). The wave phase is N*theta about this fixed point, so a
+    // perimeter that encircles it gets a single-frequency wave (no beat) that is keyed
+    // to absolute position and so registers across layers. Recomputing the centroid per
+    // layer (as before) let it drift on a varying cross-section and misaligned the wave.
+    m_woven_cycles = 0;
+    m_woven_center = Vec2d(0, 0);
+    m_woven_ref_contour.clear();
+    m_woven_ref_arclen.clear();
+    m_woven_ref_len = 0.0;
+    if (need_weave) {
+        double wavelength = 4.0;
+        for (size_t rid = 0; rid < this->num_printing_regions(); ++rid) {
+            const PrintRegionConfig &c = this->printing_region(rid).config();
+            if (c.woven_walls_enabled) { wavelength = std::max(0.5, c.woven_wall_wavelength.value); break; }
+        }
+        const Polygon *best = nullptr;
+        double         best_area = 0.0;
+        if (!m_layers.empty()) {
+            const Layer *mid = m_layers[m_layers.size() / 2];
+            for (const ExPolygon &ex : mid->lslices) {
+                const double a = std::abs(ex.contour.area());
+                if (a > best_area) { best_area = a; best = &ex.contour; }
+            }
+        }
+        if (best != nullptr && best->size() >= 3) {
+            m_woven_ref_contour = *best;
+            const Point c  = best->centroid();
+            m_woven_center = Vec2d(unscale_(c.x()), unscale_(c.y()));
+            // cumulative arc-length (mm) at each vertex, closing the loop.
+            const Points &pts = m_woven_ref_contour.points;
+            m_woven_ref_arclen.resize(pts.size());
+            double acc = 0.0;
+            for (size_t i = 0; i < pts.size(); ++i) {
+                m_woven_ref_arclen[i] = float(acc);
+                acc += unscale_((pts[(i + 1) % pts.size()] - pts[i]).cast<double>().norm());
+            }
+            m_woven_ref_len = acc;
+            m_woven_cycles  = std::max(1, int(std::lround(m_woven_ref_len / wavelength)));
+        }
+    }
 
     std::mutex mtx;
     size_t completed = 0;
@@ -791,7 +868,8 @@ void PrintObject::contour_z()
         [&, this](const tbb::blocked_range<size_t>& range) {
             for (size_t layer_idx = range.begin(); layer_idx < range.end(); layer_idx++) {
                 m_print->throw_if_canceled();
-                m_layers[layer_idx]->make_contour_z(imesh);
+                if (need_zaa)
+                    m_layers[layer_idx]->make_contour_z(*imesh);
 
                 std::scoped_lock lock(mtx);
                 completed++;
@@ -801,6 +879,15 @@ void PrintObject::contour_z()
         }
     );
     m_print->throw_if_canceled();
+    // ATN: woven walls run SEQUENTIALLY, bottom-up, so each layer's weave registers to the
+    // phase field of the layer directly beneath it (phase propagation).
+    if (need_weave) {
+        WovenPhaseField prev;
+        for (size_t layer_idx = 1; layer_idx < m_layers.size(); ++layer_idx) {
+            m_print->throw_if_canceled();
+            m_layers[layer_idx]->make_woven_walls(prev);
+        }
+    }
     BOOST_LOG_TRIVIAL(debug) << "Contouring in parallel - end";
 
     this->set_done(posContouring);

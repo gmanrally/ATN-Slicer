@@ -5191,7 +5191,14 @@ LayerResult GCode::process_layer(
         if (print.config().print_sequence == PrintSequence::ByLayer && m_enable_exclude_object && print.config().support_object_skip_flush.value) {
             std::vector<size_t> filament_instances_id;
             for (InstanceToPrint &instance : filament_to_print_instances[extruder_id]) filament_instances_id.emplace_back(instance.label_object_id);
-            m_filament_instances_code = _encode_label_ids_to_base64(filament_instances_id);
+            // ATN: an extruder may print only support/wipe on a layer (e.g. a filament used solely for the
+            // support interface), leaving no object instances. Don't hand the object-skip encoder an empty
+            // list -- it throws "Label object id error!". The M624 consumers already skip an empty code, and
+            // the object-start path at the top of the layer guards this the same way; this one didn't.
+            if (!filament_instances_id.empty())
+                m_filament_instances_code = _encode_label_ids_to_base64(filament_instances_id);
+            else
+                m_filament_instances_code.clear();
         }
 
         std::string gcode_toolchange;
@@ -6920,13 +6927,18 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
     };
     auto apply_role_based_fan_speed = [
         &path, &append_role_based_fan_marker,
-        supp_interface_fan_speed = FILAMENT_CONFIG(support_material_interface_fan_speed),
-        ironing_fan_speed        = FILAMENT_CONFIG(ironing_fan_speed)
+        supp_interface_fan_speed    = FILAMENT_CONFIG(support_material_interface_fan_speed),
+        supp_interface_fan_top_only = FILAMENT_CONFIG(support_material_interface_fan_top_only),
+        ironing_fan_speed           = FILAMENT_CONFIG(ironing_fan_speed)
     ] {
-        // Orca/ATN: the support-interface fan targets ONLY the top contact layer
-        // (erSupportMaterialInterfaceTop), not every interface layer below it.
-        append_role_based_fan_marker(erSupportMaterialInterfaceTop, "_SUPP_INTERFACE"sv,
-                                     supp_interface_fan_speed >= 0 && path.role() == erSupportMaterialInterfaceTop);
+        // Orca/ATN: the support-interface fan targets the top contact layer
+        // (erSupportMaterialInterfaceTop) — plus the interface layers below it
+        // (erSupportMaterialInterface) unless "top interface layer only" is set.
+        const ExtrusionRole r = path.role();
+        const bool supp_fan_on = supp_interface_fan_speed >= 0 &&
+            (r == erSupportMaterialInterfaceTop ||
+             (!supp_interface_fan_top_only && r == erSupportMaterialInterface));
+        append_role_based_fan_marker(erSupportMaterialInterfaceTop, "_SUPP_INTERFACE"sv, supp_fan_on);
         append_role_based_fan_marker(erIroning, "_IRONING"sv,
                                      ironing_fan_speed >= 0 && path.role() == erIroning);
     };
@@ -7025,7 +7037,7 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
                         coordf_t z_diff = unscale_(line.b.z());
 
                         double extrusion_ratio = 1;
-                        if (path.role() != erIroning) {
+                        if (path.role() != erIroning && !path.z_no_flow_comp) {
                             extrusion_ratio = (path.height + z_diff) / path.height;
                         }
 
@@ -7232,7 +7244,7 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
                 coordf_t z_diff = unscale_(processed_point.p.z());
 
                 double extrusion_ratio = 1;
-                if (path.role() != erIroning) {
+                if (path.role() != erIroning && !path.z_no_flow_comp) {
                     extrusion_ratio = (path.height + z_diff) / path.height;
                 }
 

@@ -1248,6 +1248,25 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionBool, zaa_dont_alternate_fill_direction))
     ((ConfigOptionFloat, zaa_min_z))
     ((ConfigOptionFloat, zaa_minimize_perimeter_height))
+
+    // ATN: Woven walls - sub-layer Z modulation of perimeters to interlock
+    // layers in XY+Z (strength). Top/bottom solid surfaces are left planar.
+    ((ConfigOptionBool,  woven_walls_enabled))
+    ((ConfigOptionBool,  woven_walls_nested))
+    ((ConfigOptionBool,  woven_walls_interwall))
+    ((ConfigOptionFloat, woven_wall_amplitude))
+    ((ConfigOptionFloat, woven_wall_wavelength))
+    ((ConfigOptionFloat, woven_wall_max_sep))
+    ((ConfigOptionInt,   woven_wall_edge_taper))
+    ((ConfigOptionInt,   woven_wall_skip_outer))
+    ((ConfigOptionInt,   woven_wall_skip_inner))
+    ((ConfigOptionFloat, woven_wall_flow_ratio))
+
+    // ATN: Brick layers - shift alternate perimeter shells by a constant
+    // half-layer height in Z so their layer seams stagger like brickwork.
+    ((ConfigOptionBool,  brick_layers_enabled))
+    ((ConfigOptionFloat, brick_layer_offset))
+    ((ConfigOptionFloat, brick_layer_flow))
     )
 
 PRINT_CONFIG_CLASS_DEFINE(
@@ -1642,6 +1661,7 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionBool,                gcode_comments))
     ((ConfigOptionInt,                 slow_down_layers))
     ((ConfigOptionInts,                support_material_interface_fan_speed))
+    ((ConfigOptionBools,               support_material_interface_fan_top_only)) // Orca/ATN: fan only the top contact layer vs all support-interface layers
     ((ConfigOptionInts,                internal_bridge_fan_speed)) // ORCA: Add support for separate internal bridge fan speed control
     ((ConfigOptionInts,                ironing_fan_speed))
     // Orca: notes for profiles from PrusaSlicer

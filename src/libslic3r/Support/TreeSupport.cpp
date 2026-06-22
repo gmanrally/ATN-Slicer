@@ -1540,8 +1540,10 @@ void TreeSupport::generate_toolpaths()
                         filler_Roof1stLayer->angle = base_support_angle;
                         fill_params.dont_sort = true;
                         Flow interface_base_flow = interface_as_base ? support_flow : interface_flow;
-                        // Orca/ATN: Roof1stLayer is the top contact layer — tag it distinctly so the support-interface fan targets only it.
-                        ExtrusionRole interface_role = interface_as_base ? erSupportMaterial : erSupportMaterialInterfaceTop;
+                        // Orca/ATN: Roof1stLayer is normally the transition band just below the roof (plain
+                        // interface), but a single-interface-layer roof IS the model contact -> tag it "top".
+                        ExtrusionRole interface_role = interface_as_base ? erSupportMaterial :
+                            (area_group.is_roof_contact ? erSupportMaterialInterfaceTop : erSupportMaterialInterface);
                         // generate a perimeter first to support interface better
                         ExtrusionEntityCollection* temp_support_fills = new ExtrusionEntityCollection();
                         make_perimeter_and_infill(temp_support_fills->entities, poly, 1, interface_base_flow, interface_role,
@@ -1593,7 +1595,10 @@ void TreeSupport::generate_toolpaths()
                         }
 
                         Flow interface_base_flow = interface_as_base ? support_flow : interface_flow;
-                        ExtrusionRole interface_role = interface_as_base ? erSupportMaterial : erSupportMaterialInterface;
+                        // Orca/ATN: only the model-touching contact layer (is_roof_contact) gets the "top"
+                        // interface role; the rest of the roof band is plain interface, so "top only" fans just it.
+                        ExtrusionRole interface_role = interface_as_base ? erSupportMaterial :
+                            (area_group.is_roof_contact ? erSupportMaterialInterfaceTop : erSupportMaterialInterface);
                         fill_expolygons_generate_paths(ts_layer->support_fills.entities, polys, filler_interface.get(), fill_params, interface_role,
                                                        interface_base_flow);
                     }
@@ -2055,6 +2060,7 @@ void TreeSupport::draw_circles()
 
                 ExPolygons& base_areas = ts_layer->base_areas;
                 ExPolygons& roof_areas = ts_layer->roof_areas;
+                ExPolygons& roof_contact_areas = ts_layer->roof_contact_areas; // Orca/ATN: dtt==0 (model-touching) roof
                 ExPolygons& roof_1st_layer = ts_layer->roof_1st_layer;
                 ExPolygons& floor_areas = ts_layer->floor_areas;
                 ExPolygons& roof_gap_areas = ts_layer->roof_gap_areas;
@@ -2165,6 +2171,11 @@ void TreeSupport::draw_circles()
                              (node.dist_mm_to_top - this->top_z_distance) < top_interface_height + EPSILON && node.is_sharp_tail==false)
                     {
                         append(roof_1st_layer, area);
+                        // Orca/ATN: the model-touching roof node has distance_to_top==0 (seeded negative at the
+                        // contact, +1 per layer down). Robust under branch merging (unlike a coverage test); the
+                        // few merge-corrupted nodes (~4%) are an acceptable miss. Tag it for the top-interface fan.
+                        if (node.distance_to_top == 0)
+                            append(roof_contact_areas, area);
                         max_layers_above_roof1 = std::max(max_layers_above_roof1, node.dist_mm_to_top);
                     }
                     // ORCA: Roof layers must also fit inside the mm cap.
@@ -2172,6 +2183,8 @@ void TreeSupport::draw_circles()
                              (node.dist_mm_to_top - this->top_z_distance) < top_interface_height + EPSILON && node.is_sharp_tail == false)
                     {
                         append(roof_areas, area);
+                        if (node.distance_to_top == 0)
+                            append(roof_contact_areas, area);
                         max_layers_above_roof = std::max(max_layers_above_roof, node.dist_mm_to_top);
                     }
                     else
@@ -2187,6 +2200,12 @@ void TreeSupport::draw_circles()
                 // join roof segments
                 roof_areas     = diff_clipped(offset2_ex(roof_areas, line_width_scaled, -line_width_scaled), get_collision(false));
                 roof_areas     = intersection_ex(roof_areas, m_machine_border);
+                // Orca/ATN: process the contact subset the SAME way so it aligns with the joined roof, then keep
+                // it within the final roof. The area-group tagging below uses an area-majority intersection.
+                if (!roof_contact_areas.empty())
+                    roof_contact_areas = intersection_ex(
+                        diff_clipped(offset2_ex(roof_contact_areas, line_width_scaled, -line_width_scaled), get_collision(false)),
+                        roof_areas);
                 roof_1st_layer = diff_clipped(offset2_ex(roof_1st_layer, line_width_scaled, -line_width_scaled), get_collision(false));
 
                 // roof_1st_layer and roof_areas may intersect, so need to subtract roof_areas from roof_1st_layer
@@ -2358,17 +2377,22 @@ void TreeSupport::draw_circles()
                     area_groups.back().need_infill = overlaps({ expoly }, area_poly);
                     area_groups.back().need_extra_wall = need_extra_wall && !area_groups.back().need_infill;
                 }
+                // Orca/ATN: EXACTLY split the roof into the model-touching contact band (roof_contact_areas,
+                // the dtt==0 subset already aligned to the joined roof in the pipeline) and the rest. Only the
+                // contact gets the "top" interface role, so "top interface layer only" fans just it.
+                roof_areas = diff_ex(roof_areas, roof_contact_areas);
                 for (auto& expoly : ts_layer->roof_areas) {
-                    //if (area(expoly) < SQ(scale_(1))) continue;
                     area_groups.emplace_back(&expoly, SupportLayer::RoofType, max_layers_above_roof);
                 }
+                for (auto& expoly : ts_layer->roof_contact_areas) {
+                    area_groups.emplace_back(&expoly, SupportLayer::RoofType, max_layers_above_roof);
+                    area_groups.back().is_roof_contact = true; // model-touching layer -> "top" interface role
+                }
                 for (auto &expoly : ts_layer->floor_areas) {
-                    //if (area(expoly) < SQ(scale_(1))) continue;
                     area_groups.emplace_back(&expoly, SupportLayer::FloorType, 10000);
                     area_groups.back().interface_as_base = floor_interface_as_base;
                 }
                 for (auto &expoly : ts_layer->roof_1st_layer) {
-                    //if (area(expoly) < SQ(scale_(1))) continue;
                     area_groups.emplace_back(&expoly, SupportLayer::Roof1stLayer, max_layers_above_roof1);
                 }
 

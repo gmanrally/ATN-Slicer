@@ -7,6 +7,7 @@
 #include "SurfaceCollection.hpp"
 #include "ExtrusionEntityCollection.hpp"
 #include "BoundingBox.hpp"
+#include "WovenWalls.hpp"
 namespace Slic3r {
 
 class ExPolygon;
@@ -196,6 +197,9 @@ public:
                                                                            FillLightning::Generator* lightning_generator) const;
     void 					make_ironing();
     void                    make_contour_z(const sla::IndexedMesh &mesh);
+    // ATN: Z-modulated perimeters. `prev` is the layer-below phase field (phase
+    // propagation); it is replaced in place with THIS layer's field for the next layer.
+    void                    make_woven_walls(WovenPhaseField &prev);
 
     void                    export_region_slices_to_svg(const char *path) const;
     void                    export_region_fill_surfaces_to_svg(const char *path) const;
@@ -313,6 +317,7 @@ protected:
 
     // for tree support
     ExPolygons                                roof_areas;
+    ExPolygons                                roof_contact_areas; // Orca/ATN: just the model-touching (top) roof layer, so the support-interface fan can target only it
     ExPolygons                                roof_1st_layer; // the layer just below roof. When working with PolySupport, this layer should be printed with regular material
     ExPolygons                                floor_areas;
     ExPolygons                                roof_gap_areas; // the areas in the gap between support roof and overhang
@@ -326,6 +331,7 @@ protected:
         coordf_t   dist_to_top; // mm dist to top
         bool need_infill = false;
         bool need_extra_wall = false;
+        bool is_roof_contact = false; // Orca/ATN: this roof group is the model-touching top contact layer
         AreaGroup(ExPolygon *a, int t, coordf_t d) : area(a), type(t), dist_to_top(d) {}
     };
     std::vector<AreaGroup>                    area_groups;

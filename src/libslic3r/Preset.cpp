@@ -1269,6 +1269,20 @@ static std::vector<std::string> s_Preset_print_options{
     "zaa_minimize_perimeter_height",
     "zaa_dont_alternate_fill_direction",
     "zaa_min_z",
+    // ATN: Woven walls
+    "woven_walls_enabled",
+    "woven_walls_nested",
+    "woven_walls_interwall",
+    "woven_wall_amplitude",
+    "woven_wall_wavelength",
+    "woven_wall_max_sep",
+    "woven_wall_edge_taper",
+    "woven_wall_skip_outer",
+    "woven_wall_skip_inner",
+    "woven_wall_flow_ratio",
+    "brick_layers_enabled",
+    "brick_layer_offset",
+    "brick_layer_flow",
     "ironing_expansion",
 };
 
@@ -1298,7 +1312,7 @@ static std::vector<std::string> s_Preset_filament_options {/*"filament_colour", 
     "nozzle_temperature_range_low", "nozzle_temperature_range_high",
     "filament_extruder_variant",
     //SoftFever
-    "enable_pressure_advance", "pressure_advance","adaptive_pressure_advance","adaptive_pressure_advance_model","adaptive_pressure_advance_overhangs", "adaptive_pressure_advance_bridges","chamber_temperature", "filament_shrink","filament_shrinkage_compensation_z", "support_material_interface_fan_speed","internal_bridge_fan_speed", "filament_notes" /*,"filament_seam_gap"*/,
+    "enable_pressure_advance", "pressure_advance","adaptive_pressure_advance","adaptive_pressure_advance_model","adaptive_pressure_advance_overhangs", "adaptive_pressure_advance_bridges","chamber_temperature", "filament_shrink","filament_shrinkage_compensation_z", "support_material_interface_fan_speed","support_material_interface_fan_top_only","internal_bridge_fan_speed", "filament_notes" /*,"filament_seam_gap"*/,
     "ironing_fan_speed",
     // Filament ironing overrides
     "filament_ironing_flow", "filament_ironing_spacing", "filament_ironing_inset", "filament_ironing_speed",
