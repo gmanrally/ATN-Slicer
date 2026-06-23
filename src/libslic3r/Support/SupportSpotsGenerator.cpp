@@ -240,7 +240,11 @@ FloatingExtrusionSpots detect_floating_extrusions(const PrintObject *po, PrintTr
         std::vector<ExtrusionLine> prev_lines;
         for (const LayerRegion *region : lower->regions()) {
             append_supporting_lines(region->perimeters, prev_lines);
-            append_supporting_lines(region->fills, prev_lines);
+            // ATN: do NOT add the lower layer's fills here. Building an AABB tree from
+            // every infill line, every layer, is what dominated slicing on dense parts.
+            // A wall sitting over the lower layer's interior is already detected as
+            // supported by the prev_layer_boundary (lslices) sign check below, so the
+            // infill lines are redundant for mid-air detection.
         }
         // Support material whose top surface lies at (or one support z-gap below) the bottom of this layer
         // also holds its extrusions up.
@@ -301,8 +305,13 @@ FloatingExtrusionSpots detect_floating_extrusions(const PrintObject *po, PrintTr
                     }
                 }
             };
+            // ATN: only walls (perimeters) are checked for printing in mid-air. Checking
+            // the fills too is what made this step dominate slicing on dense parts (infill
+            // is the bulk of the extrusion) — and it's wrong anyway: sparse infill and
+            // bridges span air by design, so flagging them is a false positive. The lower
+            // layer's fills are still included as *supporting* lines above, so a wall over
+            // infill is correctly seen as held up.
             check_collection(region->perimeters);
-            check_collection(region->fills);
         }
     }
     return spots;

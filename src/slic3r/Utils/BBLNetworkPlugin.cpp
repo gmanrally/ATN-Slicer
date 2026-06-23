@@ -344,10 +344,11 @@ std::string BBLNetworkPlugin::get_libpath_in_current_directory(const std::string
     std::string file_name_string(size_needed, 0);
     ::WideCharToMultiByte(0, 0, file_name, wcslen(file_name), file_name_string.data(), size_needed, nullptr, nullptr);
 
-    std::size_t found = file_name_string.find("orca-slicer.exe");
-    if (found == (file_name_string.size() - 16)) {
+    static const std::string exe_name = "ATN_Slicer.exe";
+    std::size_t found = file_name_string.find(exe_name);
+    if (found != std::string::npos && found == (file_name_string.size() - exe_name.size())) {
         lib_path = library_name + ".dll";
-        lib_path = file_name_string.replace(found, 16, lib_path);
+        lib_path = file_name_string.replace(found, exe_name.size(), lib_path);
     }
 #else
     (void)library_name;

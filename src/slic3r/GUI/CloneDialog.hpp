@@ -27,6 +27,7 @@ private:
     ProgressBar* m_progress;
     AppConfig*   m_config;
     bool         m_cancel_process;
+    bool         m_processing = false; // guards against re-entrant OK (wxYield/Enter)
 
     void on_dpi_changed(const wxRect &suggested_rect) override {}
 

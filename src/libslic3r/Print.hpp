@@ -385,6 +385,17 @@ public:
     void 			clear_layers();
     const Layer* 	get_layer(int idx) const { return m_layers[idx]; }
     Layer* 			get_layer(int idx) 		 { return m_layers[idx]; }
+    // ATN: woven-wall cycle count, fixed once per object so the wave can't drift
+    // between layers (0 until contour_z() computes it).
+    int             woven_cycles() const { return m_woven_cycles; }
+    // ATN: fixed angle centre for the woven-wall phase (N*theta fallback).
+    Vec2d           woven_center() const { return m_woven_center; }
+    // ATN: fixed reference outline + per-vertex cumulative arc-length (mm) + length (mm).
+    // The woven phase is 2*pi*N*(arc-length of the nearest point on this contour)/length,
+    // giving a uniform-wavelength wave that follows the real shape and registers.
+    const Polygon&            woven_ref_contour() const { return m_woven_ref_contour; }
+    const std::vector<float>& woven_ref_arclen()  const { return m_woven_ref_arclen; }
+    double                    woven_ref_len()     const { return m_woven_ref_len; }
     // Get a layer exactly at print_z.
     const Layer*	get_layer_at_printz(coordf_t print_z) const;
     Layer*			get_layer_at_printz(coordf_t print_z);
@@ -566,6 +577,11 @@ private:
     SlicingParameters                       m_slicing_params;
     LayerPtrs                               m_layers;
     SupportLayerPtrs                        m_support_layers;
+    int                                     m_woven_cycles { 0 }; // ATN: stable woven-wall cycle count
+    Vec2d                                   m_woven_center { Vec2d::Zero() }; // ATN: fixed woven angle centre
+    Polygon                                 m_woven_ref_contour;  // ATN: fixed woven reference outline
+    std::vector<float>                      m_woven_ref_arclen;   // ATN: cumulative arc-length (mm) per vertex
+    double                                  m_woven_ref_len { 0.0 }; // ATN: reference outline length (mm)
     // BBS
     std::shared_ptr<TreeSupportData>        m_tree_support_preview_cache;
     // Orca: filled by detect_floating_extrusions()

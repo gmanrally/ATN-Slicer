@@ -6203,7 +6203,14 @@ std::string GCode::extrude_support(const ExtrusionEntityCollection &support_fill
         extrusions.reserve(support_fills.entities.size());
         for (ExtrusionEntity* ee : support_fills.entities) {
             const auto role = ee->role();
-            if ((role == support_extrusion_role) || (support_extrusion_role == erMixed && role != erIroning)) {
+            // ATN: the top-contact interface (erSupportMaterialInterfaceTop, added for the support-
+            // interface fan) is still "interface" for extruder routing. Without this, in multi-material
+            // mode the base extruder requests erSupportMaterial and the interface extruder requests
+            // erSupportMaterialInterface, so the ...Top paths match NEITHER and are dropped entirely.
+            const bool interface_top_match = support_extrusion_role == erSupportMaterialInterface &&
+                                             role == erSupportMaterialInterfaceTop;
+            if ((role == support_extrusion_role) || interface_top_match ||
+                (support_extrusion_role == erMixed && role != erIroning)) {
                 extrusions.emplace_back(ee);
             }
         }

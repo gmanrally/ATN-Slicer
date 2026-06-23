@@ -252,7 +252,8 @@ public:
         eSendToPrinterAll    = 6,
         eUploadGcode         = 7,
         eExportAllSlicedFile = 8,
-        ePrintMultiMachine   = 9
+        ePrintMultiMachine   = 9,
+        eSendToFarm          = 10  // ATN: push sliced plate to the printer farm
     };
 
     void update_layout();

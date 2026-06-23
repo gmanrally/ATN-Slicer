@@ -8,6 +8,7 @@
 #include "slic3r/GUI/MainFrame.hpp"
 #include "slic3r/GUI/format.hpp"
 #include "bambu_networking.hpp"
+#include "slic3r/Utils/BambuLanPrint.hpp"
 
 #include "slic3r/GUI/DeviceCore/DevManager.h"
 #include "slic3r/GUI/DeviceCore/DevUtil.h"
@@ -379,6 +380,26 @@ void PrintJob::process(Ctl &ctl)
         params.origin_model_id = "";
     }
 
+    // ATN: printer firmware (notably Bambu H2D) rejects non-ASCII or illegal characters in the
+    // upload name with "Unsupported print file path or name" [0500-4002]. The MakerWorld-designer
+    // branch above only handles spaces/symbols (not non-ASCII) and is skipped for normal user
+    // projects, which fall through to the raw project name. Sanitize the final name unconditionally.
+    {
+        static const std::string kBadChars = "<>[]:/\\|?*\" ";
+        std::string &nm = params.project_name;
+        for (char &c : nm) {
+            unsigned char uc = static_cast<unsigned char>(c);
+            if (uc < 0x20 || uc > 0x7e || kBadChars.find(c) != std::string::npos)
+                c = '_';
+        }
+        nm = std::regex_replace(nm, std::regex("_+"), "_");
+        size_t b = nm.find_first_not_of('_');
+        size_t e = nm.find_last_not_of('_');
+        nm = (b == std::string::npos) ? std::string("print") : nm.substr(b, e - b + 1);
+        nm = truncate_string(nm, 100);
+        if (nm.empty()) nm = "print";
+    }
+
     wxString error_text;
     std::string msg_text;
 
@@ -603,7 +624,69 @@ void PrintJob::process(Ctl &ctl)
             }
         }
     } else {
-        if (this->could_emmc_print) {
+        // ATN: native LAN send for newer Bambu printers (e.g. H2D) the closed networking plugin
+        // can't push to. Upload over implicit FTPS ourselves (bounded, can't hang like the plugin
+        // eMMC tunnel), then fire the normal `project_file` command on the EXISTING working MQTT
+        // link via publish_json -- bypassing start_local_print entirely. Gated to eMMC-capable
+        // printers (= exactly the ones the plugin fails on); older Bambu keep the plugin path.
+        // Force on/off with AppConfig native_bambu_lan_send = 1 / 0.
+        bool atn_native = obj && obj->is_support_print_with_emmc;
+        if (auto* ac = wxGetApp().app_config) {
+            const std::string v = ac->get("native_bambu_lan_send");
+            if (v == "0") atn_native = false; else if (v == "1") atn_native = true;
+        }
+        if (atn_native) {
+            ctl.update_status(curr_percent, _u8L("Uploading to printer over LAN"));
+            const std::string remote = Slic3r::BambuLan::sanitize_remote_name(
+                params.project_name.empty() ? std::string("print") : params.project_name);
+            std::string ferr;
+            const bool uploaded = Slic3r::BambuLan::ftps_upload(
+                params.dev_ip, params.password, params.filename, remote, ferr,
+                [&ctl](int pct) { ctl.update_status(10 + pct * 85 / 100, _u8L("Uploading to printer over LAN")); });
+            if (!uploaded) {
+                error_text = wxString::FromUTF8(ferr);
+                result = BAMBU_NETWORK_ERR_FTP_UPLOAD_FAILED;
+            } else {
+                std::vector<int> ams_map;
+                try {
+                    // task_ams_mapping is the slicer's per-filament tray assignment with BOTH H2D
+                    // nozzles merged in -- a JSON array of OBJECTS [{"ams":<tray_id>,...}, ...], not
+                    // plain ints. Extract the tray id per filament so every filament the g-code
+                    // switches to has a valid target (else the print dies at the tool change).
+                    json jm = json::parse(this->task_ams_mapping);
+                    if (jm.is_array()) for (auto& v : jm) {
+                        if (v.is_number_integer())                   ams_map.push_back(v.get<int>());
+                        else if (v.is_object() && v.contains("ams")) ams_map.push_back(v["ams"].get<int>());
+                    }
+                } catch (...) {}
+                // External spools (printer has no AMS) -> use_ams false, exactly like Bambu Studio.
+                const bool ext_use_ams = (obj && obj->HasAms()) ? this->task_use_ams : false;
+                const std::string cmd = Slic3r::BambuLan::build_project_file_command(
+                    remote, curr_plate_idx, this->task_bed_type, ext_use_ams, ams_map, this->task_ams_mapping2);
+                // Persist the exact command (the GUI info log isn't written to a file).
+                try {
+                    const std::string dbg = (boost::filesystem::temp_directory_path() / "atn_last_send.json").string();
+                    if (FILE* f = fopen(dbg.c_str(), "wb")) { fwrite(cmd.data(), 1, cmd.size(), f); fclose(f); }
+                } catch (...) {}
+                BOOST_LOG_TRIVIAL(info) << "ATN native send -> " << cmd;
+                ctl.update_status(98, _u8L("Starting print"));
+                int pr = -1;
+                try { pr = obj->publish_json(json::parse(cmd), 1); } catch (...) {}
+                if (pr != 0) { error_text = _L("Printer rejected the print command."); result = BAMBU_NETWORK_ERR_FTP_UPLOAD_FAILED; }
+                else {
+                    result = 0;
+                    // We bypassed the plugin's job flow, so the monitor still holds the pre-print
+                    // snapshot. Pull the full state a few times as the printer transitions
+                    // idle -> PREPARE -> RUNNING so the Device tab flips to live progress.
+                    obj->command_request_push_all(true);
+                    for (int i = 0; i < 6; ++i) {
+                        boost::this_thread::sleep_for(boost::chrono::milliseconds(2000));
+                        obj->command_request_push_all(true);
+                        if (obj->is_in_printing() || obj->is_in_prepare()) break;
+                    }
+                }
+            }
+        } else if (this->could_emmc_print) {
             ctl.update_status(curr_percent, _u8L("Sending print job over LAN"));
             result = m_agent->start_local_print(params, update_fn, cancel_fn);
         } else {

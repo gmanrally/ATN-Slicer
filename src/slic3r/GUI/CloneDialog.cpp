@@ -1,5 +1,7 @@
 #include "CloneDialog.hpp"
 
+#include <algorithm>
+
 #include "GUI_App.hpp"
 #include "MainFrame.hpp"
 
@@ -61,10 +63,24 @@ CloneDialog::CloneDialog(wxWindow *parent)
 
     dlg_btns->GetOK()->Bind(wxEVT_BUTTON, [this, dlg_btns, v_sizer](wxCommandEvent &e) {
 
-        m_count_spin->Disable(); // also ensures input box value applied with wxEVT_KILL_FOCUS
+        // Guard against re-entry: the paste loop below calls wxYield(), and the Enter
+        // CHAR_HOOK can re-fire this handler mid-loop, which would clone over and over
+        // (filling the bed and spilling onto extra plates). Run it once.
+        if (m_processing)
+            return;
+        m_processing = true;
+
+        m_count_spin->Disable();
         m_arrange_cb->Disable();
 
-        m_count = m_count_spin->GetValue();
+        // Read the value from the text box directly. SpinInput::GetValue() returns a
+        // cached value that is only refreshed on KILL_FOCUS/TEXT_ENTER; when OK is
+        // triggered via the Enter CHAR_HOOK those never fire, so GetValue() would return
+        // the stale default (1) and only one copy would be made. Parse the text instead.
+        long typed = 0;
+        if (!m_count_spin->GetTextCtrl()->GetValue().Trim().Trim(false).ToLong(&typed))
+            typed = m_count_spin->GetValue();
+        m_count = std::min(std::max<int>(static_cast<int>(typed), 1), 1000);
 
         m_progress->Show();
 
@@ -85,9 +101,13 @@ CloneDialog::CloneDialog(wxWindow *parent)
 
             if (m_cancel_process) {
                 m_plater->undo();
+                if (m_plater->IsFrozen())
+                    m_plater->Thaw();
+                m_processing = false;
+                EndModal(wxID_CANCEL);
                 return;
             }
- 
+
             wxYield(); // Allow event loop to process updates
         }
 
@@ -125,6 +145,7 @@ CloneDialog::CloneDialog(wxWindow *parent)
         const int key = e.GetKeyCode();
 
         if ((key == WXK_RETURN || key == WXK_NUMPAD_ENTER) &&
+            !m_processing &&
             m_count_spin->GetTextCtrl()->HasFocus())
         {
             // Trigger OK button's handler manually

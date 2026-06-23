@@ -54,6 +54,9 @@
 #include "GUI_App.hpp"
 #include "UnsavedChangesDialog.hpp"
 #include "MsgDialog.hpp"
+#ifdef ATN_FARM_TOOLS
+#include "SendToFarmDialog.hpp"
+#endif
 #include "Notebook.hpp"
 #include "GUI_Factories.hpp"
 #include "GUI_ObjectList.hpp"
@@ -1955,6 +1958,10 @@ wxBoxSizer* MainFrame::create_side_tools()
                 wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_SEND_TO_PRINTER));
             else if (m_print_select == eSendToPrinterAll)
                 wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_SEND_TO_PRINTER_ALL));
+#ifdef ATN_FARM_TOOLS
+            else if (m_print_select == eSendToFarm)
+                SendToFarmDialog(this).ShowModal();
+#endif
             /* else if (m_print_select == ePrintMultiMachine)
                  wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_PRINT_MULTI_MACHINE));*/
         });
@@ -2163,6 +2170,21 @@ wxBoxSizer* MainFrame::create_side_tools()
                     p->Dismiss();
                 });
                 p->append_button(export_gcode_btn);
+
+#ifdef ATN_FARM_TOOLS
+                // ATN: push the sliced plate (G-code + 3MF) straight to the printer farm.
+                SideButton* send_to_farm_btn = new SideButton(p, _L("Send to Farm"), "");
+                send_to_farm_btn->SetCornerRadius(0);
+                send_to_farm_btn->Bind(wxEVT_BUTTON, [this, p](wxCommandEvent&) {
+                    m_print_btn->SetLabel(_L("Send to Farm"));
+                    m_print_select = eSendToFarm;
+                    m_print_btn->Enable(true);
+                    this->Layout();
+                    fit_tab_labels(); // ORCA on label change
+                    p->Dismiss();
+                });
+                p->append_button(send_to_farm_btn);
+#endif
             }
 
             p->Popup(m_print_btn);
@@ -2790,6 +2812,7 @@ void MainFrame::init_menubar_as_editor()
             []() { return true; }, this);
 
         append_submenu(fileMenu, export_menu, wxID_ANY, _L("Export"), "");
+
 
         fileMenu->AppendSeparator();
         append_menu_item(fileMenu, wxID_ANY, _L("Sync Presets"), _L("Pull and apply the latest presets from OrcaCloud"),
