@@ -4416,11 +4416,12 @@ void PrintConfigDef::init_fff_params()
 
     // ATN: Woven walls
     def = this->add("woven_walls_enabled", coBool);
-    def->label    = L("Woven walls");
+    def->label    = L("Woven walls (beta)");
     def->category = L("Strength");
     def->tooltip  = L("Modulate wall (perimeter) Z height by a small sinusoid so layers "
                       "interlock in both XY and Z, improving inter-layer strength and "
-                      "sealing. Top and bottom solid surfaces are left flat. Walls only.");
+                      "sealing. Top and bottom solid surfaces are left flat. Walls only. "
+                      "Experimental feature under active development.");
     def->mode     = comAdvanced;
     def->set_default_value(new ConfigOptionBool(false));
 
@@ -4524,14 +4525,15 @@ void PrintConfigDef::init_fff_params()
 
     // ATN: Brick layers (staggered perimeter shells)
     def = this->add("brick_layers_enabled", coBool);
-    def->label    = L("Brick layers");
+    def->label    = L("Brick layers (beta)");
     def->category = L("Strength");
     def->tooltip  = L("Shift every other perimeter shell up by a constant fraction of a "
                       "layer height so the layer seams of neighbouring walls stagger like "
                       "brickwork, removing the continuous through-thickness weak seam. "
                       "Use alone, or ON TOP of woven walls to get non-antiphase wavy walls "
                       "that are also brick-staggered. Walls only; fades to flat at the "
-                      "top/bottom (see Edge taper layers).");
+                      "top/bottom (see Edge taper layers). Experimental feature under "
+                      "active development.");
     def->mode     = comAdvanced;
     def->set_default_value(new ConfigOptionBool(false));
 

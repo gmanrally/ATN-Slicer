@@ -1,4 +1,5 @@
 #include "SendToFarmDialog.hpp"
+#include <boost/log/trivial.hpp>
 
 #include "GUI_App.hpp"
 #include "Plater.hpp"
@@ -87,6 +88,11 @@ SendToFarmDialog::SendToFarmDialog(wxWindow* parent)
 // Peek the next auto part number from the farm and pre-fill the field (only if the
 // user hasn't typed their own), so the sent G-code/3MF and the saved project all
 // share the part number.
+SendToFarmDialog::~SendToFarmDialog()
+{
+    if (m_alive) *m_alive = false;   // any in-flight CallAfter will now bail safely
+}
+
 void SendToFarmDialog::fetch_next_part_number()
 {
     Http::get(farm_url() + "/api/slicer/next-part-number?kind=custom")
@@ -96,7 +102,8 @@ void SendToFarmDialog::fetch_next_part_number()
             std::string pn;
             try { pn = json::parse(body).value("part_number", std::string()); } catch (...) { return; }
             if (pn.empty()) return;
-            wxGetApp().CallAfter([this, pn]() {
+            wxGetApp().CallAfter([this, alive = m_alive, pn]() {
+                if (!*alive) return;
                 if (m_part_number->GetValue().Trim().Trim(false).IsEmpty()) {
                     m_part_number->SetValue(wxString::FromUTF8(pn));
                     m_lookup->SetLabel(wxString::Format(_L("New part — will be assigned %s"),
@@ -137,14 +144,16 @@ void SendToFarmDialog::fetch_printers()
                 for (auto& p : arr)
                     printers.emplace_back(p.value("id", 0), p.value("name", std::string("printer")));
             } catch (...) { return; }
-            wxGetApp().CallAfter([this, printers]() {
+            wxGetApp().CallAfter([this, alive = m_alive, printers]() {
+                if (!*alive) return;
                 m_printer->Clear(); m_printer_ids.clear();
                 for (auto& [id, name] : printers) { m_printer->Append(name); m_printer_ids.push_back(id); }
                 if (!printers.empty()) m_printer->SetSelection(0);
             });
         })
         .on_error([this](std::string, std::string error, unsigned) {
-            wxGetApp().CallAfter([this, error]() {
+            wxGetApp().CallAfter([this, alive = m_alive, error]() {
+                if (!*alive) return;
                 m_status->SetForegroundColour(wxColour(180, 60, 50));
                 m_status->SetLabel(_L("Couldn't reach the farm at ") + farm_url() + " — is it running?");
                 Layout();
@@ -165,7 +174,8 @@ void SendToFarmDialog::lookup_part()
             try { json j = json::parse(body); exists = j.value("exists", false);
                   name = j.value("name", std::string()); next_rev = j.value("next_rev_label", std::string("A")); }
             catch (...) { return; }
-            wxGetApp().CallAfter([this, exists, name, next_rev]() {
+            wxGetApp().CallAfter([this, alive = m_alive, exists, name, next_rev]() {
+                if (!*alive) return;
                 if (exists) m_lookup->SetLabel(wxString::Format(_L("Exists: %s — next revision %s"),
                                                                wxString::FromUTF8(name), wxString::FromUTF8(next_rev)));
                 else        m_lookup->SetLabel(_L("New part."));
@@ -179,6 +189,7 @@ void SendToFarmDialog::lookup_part()
 
 void SendToFarmDialog::do_send()
 {
+  try {
     // 1. The sliced G-code of the current plate.
     PartPlate* plate = wxGetApp().plater()->get_partplate_list().get_curr_plate();
     std::string gcode_path;
@@ -260,27 +271,49 @@ void SendToFarmDialog::do_send()
                 if (j.contains("message")) msg = j["message"].get<std::string>();
                 assigned_pn = j.value("part_number", std::string());
             } catch (...) {}
-            wxGetApp().CallAfter([this, msg, assigned_pn]() {
+            wxGetApp().CallAfter([this, alive = m_alive, msg, assigned_pn]() {
+              if (!*alive) return;
+              try {
                 // The farm is authoritative for the part number (e.g. if it was auto).
                 if (!assigned_pn.empty()) {
                     m_part_number->SetValue(wxString::FromUTF8(assigned_pn));
-                    apply_part_number(assigned_pn);
+                    apply_part_number(assigned_pn);   // set_project_filename() fires a GUI cascade
                 }
                 m_status->SetForegroundColour(wxColour(30, 150, 80));
                 m_status->SetLabel(wxString::FromUTF8("\xE2\x9C\x93 " + msg));   // ✓
                 m_send->Enable(); Layout();
+              } catch (const std::exception& e) {
+                BOOST_LOG_TRIVIAL(error) << "ATN SendToFarm post-upload UI update threw: " << e.what();
+                if (m_send) m_send->Enable();
+              } catch (...) {
+                BOOST_LOG_TRIVIAL(error) << "ATN SendToFarm post-upload UI update threw (non-std)";
+                if (m_send) m_send->Enable();
+              }
             });
         })
         .on_error([this](std::string body, std::string error, unsigned status) {
             std::string msg = error.empty() ? "send failed" : error;
             try { json j = json::parse(body); if (j.contains("detail")) msg = j["detail"].is_string() ? j["detail"].get<std::string>() : j["detail"].dump(); } catch (...) {}
-            wxGetApp().CallAfter([this, msg, status]() {
+            wxGetApp().CallAfter([this, alive = m_alive, msg, status]() {
+                if (!*alive) return;
                 m_status->SetForegroundColour(wxColour(180, 60, 50));
                 m_status->SetLabel(wxString::Format(_L("Failed (%u): "), status) + wxString::FromUTF8(msg));
                 m_send->Enable(); Layout();
             });
         })
         .perform();
+  } catch (const std::exception& e) {
+      BOOST_LOG_TRIVIAL(error) << "ATN SendToFarm do_send exception: " << e.what();
+      if (m_status) {
+          m_status->SetForegroundColour(wxColour(180, 60, 50));
+          m_status->SetLabel(wxString::FromUTF8(std::string("Send failed: ") + e.what()));
+      }
+      if (m_send) m_send->Enable();
+      Layout();
+  } catch (...) {
+      BOOST_LOG_TRIVIAL(error) << "ATN SendToFarm do_send: unknown exception";
+      if (m_send) m_send->Enable();
+  }
 }
 
 } // namespace GUI

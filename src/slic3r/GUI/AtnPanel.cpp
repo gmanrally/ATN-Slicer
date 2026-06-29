@@ -12,6 +12,8 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Print.hpp"
+#include "libslic3r/Layer.hpp"
+#include "libslic3r/ExtrusionEntity.hpp"
 #include "libslic3r/GCode/ThumbnailData.hpp"
 #include "libslic3r/GCode/Thumbnails.hpp"
 #include "libslic3r/miniz_extension.hpp"
@@ -22,6 +24,9 @@
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <unordered_map>
+#include <algorithm>
+#include <cctype>
+#include <limits>
 #include <wx/base64.h>
 #include <wx/sizer.h>
 #include <wx/utils.h>
@@ -80,6 +85,8 @@ void AtnPanel::set_mode(const std::string& mode)
 
 void AtnPanel::on_slice_complete()
 {
+    // ATN: the sphere risk markers have been retired in favour of a g-code Thermal
+    // view; nothing to surface here now beyond telling the page a slice finished.
     json msg;
     msg["command"] = "atn_slice_complete";
     send_to_page(msg.dump());
@@ -127,6 +134,36 @@ void AtnPanel::on_script_message(wxWebViewEvent& evt)
         } else if (command == "atn_apply_optimized") {
             handle_apply_optimized(root["data"]["b64"].get<std::string>(),
                                    (size_t)root["data"]["raw_size"].get<long long>());
+        } else if (command == "atn_show_risk") {
+            // ATN: let the assistant page toggle the preview risk layers independently.
+            // {"support":bool} and/or {"thermal":bool} set each layer; legacy {"on":bool}
+            // toggles both together.
+            Plater*     p = wxGetApp().plater();
+            GLCanvas3D* c = p ? p->get_preview_canvas3D() : nullptr;
+            if (c != nullptr && root.contains("data")) {
+                const json& d = root["data"];
+                if (d.contains("support")) c->set_show_atn_risk_markers(d["support"].get<bool>());
+                if (d.contains("thermal")) c->set_show_atn_thermal_markers(d["thermal"].get<bool>());
+                if (d.contains("on")) {
+                    const bool on = d["on"].get<bool>();
+                    c->set_show_atn_risk_markers(on);
+                    c->set_show_atn_thermal_markers(on);
+                }
+            }
+        } else if (command == "atn_warp_fea") {
+            // ATN: reduced-FEA support-failure markers from the panel's /warp result —
+            // green->red spheres on the supports the Engine predicts will fail.
+            Plater*     p = wxGetApp().plater();
+            GLCanvas3D* c = p ? p->get_preview_canvas3D() : nullptr;
+            if (c != nullptr && root.contains("data") && root["data"].contains("markers")) {
+                std::vector<Vec3d> pos;
+                std::vector<float> uts;
+                for (const auto& m : root["data"]["markers"]) {
+                    pos.emplace_back(m.value("x", 0.0), m.value("y", 0.0), m.value("z", 0.0));
+                    uts.push_back(float(m.value("util", 0.0)));
+                }
+                c->set_atn_fea_markers(pos, uts);
+            }
         } else {
             // Unknown to us - let the app-wide handler have a go.
             wxGetApp().handle_web_request(message);
@@ -138,6 +175,157 @@ void AtnPanel::on_script_message(wxWebViewEvent& evt)
         reply["data"]["message"] = e.what();
         send_to_page(reply.dump());
     }
+}
+
+// ATN: a structured "risk fingerprint" of the current slice. The server-side
+// pre-flight + learning loop want features, not just raw gcode: where the part
+// overhangs/curls, how fragile the connections are, the bed footprint vs height,
+// and the material/tool budget. Geometry (overhang/curl/sharp-tail/cantilever)
+// comes from the sliced libslic3r layers; the volume/time/tool figures come from
+// the estimated statistics. Everything is read-only and safe to call pre-slice
+// (returns {"sliced": false}).
+static json compute_fingerprint()
+{
+    json fp = json::object();
+
+    Plater* plater = wxGetApp().plater();
+    if (plater == nullptr) { fp["sliced"] = false; return fp; }
+
+    const Print& print = plater->fff_print();
+    const auto& objects = print.objects();
+
+    bool sliced = false;
+    for (const PrintObject* po : objects)
+        if (!po->layers().empty()) { sliced = true; break; }
+    fp["sliced"] = sliced;
+    if (!sliced) return fp;
+
+    const double sf2 = SCALING_FACTOR * SCALING_FACTOR; // scaled area -> mm^2
+
+    double total_overhang_area = 0.0, max_layer_overhang_area = 0.0;
+    double max_curl_height = 0.0, max_sharp_tail_height = 0.0;
+    int    sharp_tail_count = 0, cantilever_count = 0;
+    double first_layer_area = 0.0;
+    int    first_layer_islands = 0;
+    double max_z = 0.0, tallest_aspect = 0.0;
+    double tallest_support = 0.0, min_branch_w = 1e9;
+    bool   any_support = false;
+
+    for (const PrintObject* po : objects) {
+        const auto& layers = po->layers();
+        if (layers.empty()) continue;
+
+        const Layer* first = layers.front();
+        for (const ExPolygon& isl : first->lslices)
+            first_layer_area += isl.area() * sf2;
+        first_layer_islands += (int) first->lslices.size();
+
+        double obj_min_xy = 0.0;
+        if (!first->lslices_bboxes.empty()) {
+            BoundingBox bb = first->lslices_bboxes.front();
+            for (const BoundingBox& b : first->lslices_bboxes) bb.merge(b);
+            obj_min_xy = std::min(unscale<double>(bb.size().x()), unscale<double>(bb.size().y()));
+        }
+
+        double obj_max_z = 0.0;
+        for (const Layer* l : layers) {
+            obj_max_z = std::max(obj_max_z, (double) l->print_z);
+            for (const ExPolygon& ov : l->loverhangs) {
+                const double a = ov.area() * sf2;
+                total_overhang_area += a;
+                max_layer_overhang_area = std::max(max_layer_overhang_area, a);
+            }
+            for (const CurledLine& cl : l->curled_lines)
+                max_curl_height = std::max(max_curl_height, (double) cl.curled_height);
+            sharp_tail_count += (int) l->sharp_tails.size();
+            for (float sh : l->sharp_tails_height)
+                max_sharp_tail_height = std::max(max_sharp_tail_height, (double) sh);
+            cantilever_count += (int) l->cantilevers.size();
+        }
+        max_z = std::max(max_z, obj_max_z);
+        if (obj_min_xy > 1e-6)
+            tallest_aspect = std::max(tallest_aspect, obj_max_z / obj_min_xy);
+
+        // Support-structure metrics for the preflight support-snap learning: how tall
+        // the supports get and how thin the thinnest branch (above the base) becomes.
+        // The learning loop pairs these with the material + wall count (already in the
+        // config block) and the user's real snap outcomes to build a per-material rule.
+        if (po->support_layer_count() > 0) {
+            any_support = true;
+            for (const SupportLayer* sl : po->support_layers()) {
+                tallest_support = std::max(tallest_support, double(sl->print_z));
+                if (sl->print_z < 3.0) continue; // ignore the thick base; necks higher up snap
+                const ExPolygons& islands = !sl->support_islands.empty() ? sl->support_islands : sl->base_areas;
+                for (const ExPolygon& isl : islands) {
+                    const double a = isl.area() * sf2;
+                    if (a < 0.2) continue;
+                    min_branch_w = std::min(min_branch_w, std::sqrt(a));
+                }
+            }
+        }
+    }
+
+    json g = json::object();
+    g["max_z_mm"]                    = max_z;
+    g["first_layer_area_mm2"]        = first_layer_area;
+    g["first_layer_islands"]         = first_layer_islands;
+    g["total_overhang_area_mm2"]     = total_overhang_area;
+    g["max_layer_overhang_area_mm2"] = max_layer_overhang_area;
+    g["sharp_tail_count"]            = sharp_tail_count;
+    g["max_sharp_tail_height_mm"]    = max_sharp_tail_height;
+    g["cantilever_count"]            = cantilever_count;
+    g["max_curl_height_mm"]          = max_curl_height;
+    g["tallest_aspect_ratio"]        = tallest_aspect;
+    fp["geometry"] = g;
+
+    json sup = json::object();
+    sup["present"] = any_support;
+    if (any_support) {
+        sup["tallest_mm"] = tallest_support;
+        if (min_branch_w < 1e8) {
+            sup["min_branch_width_mm"] = min_branch_w;
+            sup["slenderness"]         = (min_branch_w > 0.1) ? (tallest_support / min_branch_w) : 0.0;
+        }
+    }
+    fp["supports"] = sup;
+
+    const PrintStatistics& ps = print.print_statistics();
+    fp["total_weight_g"]   = ps.total_weight;
+    fp["total_volume_mm3"] = ps.total_extruded_volume;
+    fp["toolchanges"]      = ps.total_toolchanges;
+
+    PartPlate* plate = plater->get_partplate_list().get_curr_plate();
+    GCodeProcessorResult* res = plate ? plate->get_slice_result() : nullptr;
+    if (res != nullptr) {
+        const PrintEstimatedStatistics& es = res->print_statistics;
+        fp["time_normal_s"]      = es.modes[(size_t) PrintEstimatedStatistics::ETimeMode::Normal].time;
+        fp["filament_changes"]   = es.total_filament_changes;
+        fp["extruder_changes"]   = es.total_extruder_changes;
+        double support_vol = 0.0;
+        for (const auto& kv : es.support_volumes_per_extruder) support_vol += kv.second;
+        fp["support_volume_mm3"] = support_vol;
+        fp["travel_distance_mm"] = es.total_travel_distance;
+
+        json vpe = json::object();
+        for (const auto& kv : es.total_volumes_per_extruder)
+            vpe[std::to_string(kv.first)] = kv.second;
+        fp["volume_per_extruder"] = vpe;
+
+        json vpr = json::object();
+        double bridge_len = 0.0;
+        for (const auto& kv : es.used_filaments_per_role) {
+            std::string role = ExtrusionEntity::role_to_string(kv.first);
+            json one; one["length_mm"] = kv.second.first; one["volume_mm3"] = kv.second.second;
+            vpr[role] = one;
+            std::string lower = role;
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c){ return (char)::tolower(c); });
+            if (lower.find("bridge") != std::string::npos) bridge_len += kv.second.first;
+        }
+        fp["volume_per_role"]  = vpr;
+        fp["bridge_length_mm"] = bridge_len;
+    }
+
+    return fp;
 }
 
 std::string AtnPanel::build_context_json() const
@@ -185,6 +373,9 @@ std::string AtnPanel::build_context_json() const
         }
     }
     ctx["floating_extrusions"] = floating;
+
+    // ATN: structured risk fingerprint for the server pre-flight + learning loop.
+    ctx["fingerprint"] = compute_fingerprint();
 
     return ctx.dump();
 }

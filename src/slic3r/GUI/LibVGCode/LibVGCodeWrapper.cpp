@@ -3,6 +3,7 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include <algorithm>
+#include <unordered_map>
 #include <cmath>
 #include <cstring>
 #include <iterator>
@@ -12,6 +13,8 @@
 #include "libslic3r/libslic3r.h"
 #include "LibVGCodeWrapper.hpp"
 #include "libslic3r/Print.hpp"
+#include "libslic3r/PresetBundle.hpp"   // ATN: chamber temp for the Thermal view ambient
+#include "slic3r/GUI/GUI_App.hpp"
 #include "libslic3r/Color.hpp"
 #include "libslic3r/CustomGCode.hpp"
 #include "libslic3r/Exception.hpp"
@@ -265,6 +268,158 @@ GCodeInputData convert(const Slic3r::GCodeProcessorResult& result, const std::ve
     ret.vertices.shrink_to_fit();
 
     ret.spiral_vase_mode = result.spiral_vase_mode;
+
+    // ATN: per-layer heat-soak temperatures for the "Thermal" view. Lumped-cooling
+    // model mirroring the askthenozzle.com preflight: walk layers bottom-up tracking
+    // how hot the top of the part still is when the next layer lands. Short layers on
+    // small cross-sections trap heat -> over-melt. Self-contained: uses each layer's
+    // print temperature, time and footprint straight from the gcode.
+    {
+        uint32_t max_layer = 0;
+        for (const PathVertex& v : ret.vertices) max_layer = std::max(max_layer, v.layer_id);
+        const size_t NL = size_t(max_layer) + 1;
+        std::vector<float> ltime(NL, 0.0f), tprint(NL, 0.0f), lfan(NL, 0.0f), lz(NL, 0.0f);
+        std::vector<float> mnx(NL, 1e9f), mny(NL, 1e9f), mxx(NL, -1e9f), mxy(NL, -1e9f);
+        for (const PathVertex& v : ret.vertices) {
+            const size_t L = size_t(v.layer_id);
+            ltime[L] += v.times[0];                       // sum the layer's move times
+            if (v.is_extrusion()) {
+                tprint[L] = std::max(tprint[L], v.temperature);
+                lfan[L]   = std::max(lfan[L], v.fan_speed);
+                lz[L]     = std::max(lz[L], v.position[2]);   // this layer's height above the bed
+                mnx[L] = std::min(mnx[L], v.position[0]); mxx[L] = std::max(mxx[L], v.position[0]);
+                mny[L] = std::min(mny[L], v.position[1]); mxy[L] = std::max(mxy[L], v.position[1]);
+            }
+        }
+        // ATN: ambient is a height-decaying blend of the HEATED BED (dominant near the plate)
+        // and the chamber air (dominant up high): T_amb(z) = chamber + (bed - chamber)*exp(-z/H).
+        // Thermal-cam validation (ASA-CF, 100 C bed, 60 C chamber) showed a short part bakes at
+        // ~bed temp -- a finished 15 mm part sat at 85 C, 25 C above chamber. Chamber falls back
+        // to 35 C (open printer); with no bed temp found we degrade gracefully to flat chamber.
+        float T_chamber = 35.0f, T_bed = 0.0f, warp_k = 0.20f;  // warp_k = E[GPa]*CTE[um]*1e-3 (MPa/degC)
+        bool  warp_cf  = false;      // anisotropic carbon-fibre filament (directional warp)
+        const float H_BED = 25.0f;   // bed thermal-influence height (mm)
+        if (auto* pb = Slic3r::GUI::wxGetApp().preset_bundle) {
+            const Slic3r::DynamicPrintConfig cfg = pb->full_config();
+            if (const auto* opt = cfg.option<Slic3r::ConfigOptionInts>("chamber_temperature");
+                opt != nullptr && !opt->values.empty() && opt->values.front() > 0)
+                T_chamber = float(opt->values.front());
+            for (const char* key : {"hot_plate_temp", "bed_temperature", "first_layer_bed_temperature", "textured_plate_temp"}) {
+                if (const auto* opt = cfg.option<Slic3r::ConfigOptionInts>(key);
+                    opt != nullptr && !opt->values.empty() && opt->values.front() > 0) { T_bed = float(opt->values.front()); break; }
+            }
+            // ATN: warp-stress constant for the Warp-stress view -- E[GPa]*CTE[um/m/C]*1e-3 -> MPa
+            // per degC of (T_print - interface) contraction. Mirrors the askthenozzle table; carbon
+            // fill lowers CTE so *-CF reads firmer.
+            if (const auto* fopt = cfg.option<Slic3r::ConfigOptionStrings>("filament_type");
+                fopt != nullptr && !fopt->values.empty()) {
+                std::string m = fopt->values.front();
+                for (auto& ch : m) if (ch >= 'a' && ch <= 'z') ch = char(ch - 32);
+                auto has = [&](const char* k){ return m.find(k) != std::string::npos; };
+                warp_cf = has("CF") || has("CARBON");
+                if      (has("ASA-CF") || has("ASACF"))                          warp_k = 0.19f;
+                else if (has("PPA"))                                            warp_k = 0.245f;
+                else if (has("PA6-CF")||has("PA-CF")||has("PA6CF")||has("PACF")) warp_k = 0.24f;
+                else if (has("PETG-CF"))                                        warp_k = 0.17f;
+                else if (has("PET-CF")||has("PETCF"))                           warp_k = 0.18f;
+                else if (has("PEEK"))                                           warp_k = 0.19f;
+                else if (has("ASA"))                                            warp_k = 0.20f;
+                else if (has("ABS"))                                            warp_k = 0.18f;
+                else if (has("PETG"))                                           warp_k = 0.12f;
+                else if (has("PA")||has("NYLON"))                               warp_k = 0.15f;
+                else if (has("PC"))                                             warp_k = 0.15f;
+                else if (has("TPU"))                                            warp_k = 0.008f;
+                else if (has("PLA"))                                            warp_k = 0.24f;
+            }
+        }
+        if (T_bed < T_chamber) T_bed = T_chamber;   // never a negative bed contribution
+        // ATN: heat-soak as an ACCUMULATING stack temperature, walked bottom-up. Each
+        // layer drops fresh hot material (~T_print) on the warm stack, then the layer's
+        // own print time elapses before the next layer returns to that XY. SHORT layers
+        // (thin supports, narrow tips) barely cool, so heat piles up layer-over-layer;
+        // LONG layers shed it back to ambient. tau is scaled to tens of seconds (small
+        // cross-sections + low fan hold heat) so the per-layer time actually gates the
+        // build-up. The previous model decayed each layer from T_print independently and
+        // its weak coupling converged to ambient -> it under-read the soak on fast supports.
+        std::vector<float> interf(NL, T_chamber), warp(NL, 0.0f);
+        float T_soak = (T_bed > 0.0f) ? T_bed : T_chamber;   // layer 0 sits on the hot bed
+        for (size_t L = 0; L < NL; ++L) {
+            const float Tp    = tprint[L] > 1.0f ? tprint[L] : 240.0f;
+            const float t     = ltime[L];
+            const float area  = (mxx[L] > mnx[L] && mxy[L] > mny[L]) ? (mxx[L] - mnx[L]) * (mxy[L] - mny[L]) : 0.0f;
+            const float f     = std::clamp(lfan[L] / 100.0f, 0.0f, 1.0f);
+            const float xsect = 1.0f + std::max(0.0f, (40.0f - std::min(area, 40.0f)) / 40.0f) * 4.0f; // small X-sections trap heat
+            const float tau   = (16.0f - 9.0f * f) * xsect;                                            // ~7s big+fan .. ~80s tiny+no-fan
+            // bed-influenced ambient at THIS layer's height above the plate
+            const float T_amb = (T_bed > 0.0f) ? T_chamber + (T_bed - T_chamber) * std::exp(-lz[L] / H_BED) : T_chamber;
+            if (t > 0.0f) {
+                // deposit 0.05: thermal-cam validated on ASA-CF bed-clips (mid 97C vs IR 97, top
+                // 85C vs finished-part 85). Low because the bed-influenced ambient now supplies the
+                // baseline warmth -- this only adds GENUINE layer-over-layer soak, which still climbs
+                // hard on thin/fast/no-fan features (high heat-retention e) like tall tree supports.
+                const float T0 = T_soak + 0.05f * std::max(0.0f, Tp - T_soak);  // fresh layer pulls the top toward print temp
+                T_soak = T_amb + (T0 - T_amb) * std::exp(-t / tau);             // then cool over the layer's print time
+            }
+            interf[L] = T_soak;
+            warp[L]   = std::max(0.0f, Tp - T_soak);   // per-layer contraction dT (degC) for the warp pass
+        }
+        for (PathVertex& v : ret.vertices)
+            v.thermal_risk = interf[size_t(v.layer_id)];
+
+        // ATN: ANISOTROPIC / DIRECTIONAL warp stress (Warp-stress view). CF beads shrink little
+        // ALONG the fibre (low CTE) but hard ACROSS (matrix), so warp stress is directional and the
+        // LAYUP matters. Per bead we add its in-plane stress tensor (high across the bead, low along,
+        // rotated by the tool-path angle, length-weighted) into a coarse XY cell; the cell's PRINCIPAL
+        // stress is the local warp/crack stress. Python-validated on the bed-clips (perimeters ->
+        // aligned weak axis ~5x; cross-hatched infill -> balanced).
+        {
+            const float k_along  = warp_k * (warp_cf ? 0.30f : 1.0f);
+            const float k_across = warp_k * (warp_cf ? 1.60f : 1.0f);
+            const float CELL = 4.0f;   // mm bin
+            struct Cell { float xx = 0.0f, yy = 0.0f, xy = 0.0f, len = 0.0f; };
+            std::unordered_map<int64_t, Cell> cells;
+            auto cell_key = [&](const PathVertex& v) -> int64_t {
+                const int cx = int(std::floor(v.position[0] / CELL));
+                const int cy = int(std::floor(v.position[1] / CELL));
+                return (int64_t(cx) << 32) ^ int64_t(uint32_t(cy));
+            };
+            const std::vector<PathVertex>& V = ret.vertices;
+            for (size_t i = 1; i < V.size(); ++i) {
+                const PathVertex& a = V[i - 1];
+                const PathVertex& b = V[i];
+                if (!b.is_extrusion() || b.is_travel() || a.layer_id != b.layer_id) continue;
+                const float dx = b.position[0] - a.position[0];
+                const float dy = b.position[1] - a.position[1];
+                const float seg = std::sqrt(dx * dx + dy * dy);
+                if (seg < 1e-4f) continue;
+                const float dT = warp[size_t(b.layer_id)];
+                if (dT <= 0.0f) continue;
+                const float th = std::atan2(dy, dx);
+                const float sa = k_along * dT, sb = k_across * dT;   // MPa along / across the bead
+                const float c = std::cos(th), s = std::sin(th);
+                Cell& cl = cells[cell_key(b)];
+                cl.xx += seg * (sa * c * c + sb * s * s);
+                cl.yy += seg * (sa * s * s + sb * c * c);
+                cl.xy += seg * ((sa - sb) * s * c);
+                cl.len += seg;
+            }
+            std::unordered_map<int64_t, float> cell_s1;
+            cell_s1.reserve(cells.size());
+            for (const auto& kv : cells) {
+                const Cell& c = kv.second;
+                if (c.len < 1e-3f) { cell_s1[kv.first] = 0.0f; continue; }
+                const float xx = c.xx / c.len, yy = c.yy / c.len, xy = c.xy / c.len;
+                const float avg = 0.5f * (xx + yy);
+                const float rad = std::sqrt(0.25f * (xx - yy) * (xx - yy) + xy * xy);
+                cell_s1[kv.first] = avg + rad;   // max principal stress (MPa) for this cell
+            }
+            for (PathVertex& v : ret.vertices) {
+                if (!v.is_extrusion()) { v.warp_stress = 0.0f; continue; }
+                const auto it = cell_s1.find(cell_key(v));
+                v.warp_stress = (it != cell_s1.end()) ? it->second : 0.0f;
+            }
+        }
+    }
 
     return ret;
 }

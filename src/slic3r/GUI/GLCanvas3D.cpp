@@ -59,6 +59,8 @@
 #include <wx/fontutil.h>
 // Print now includes tbb, and tbb includes Windows. This breaks compilation of wxWidgets if included before wx.
 #include "libslic3r/Print.hpp"
+#include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/Layer.hpp"
 #include "libslic3r/SLAPrint.hpp"
 
 #include "wxExtensions.hpp"
@@ -2090,6 +2092,8 @@ void GLCanvas3D::render(bool only_init)
     }
 
     _render_sequential_clearance();
+    // ATN: in-slicer risk/FEA markers removed -- the warp result is shown via the panel's
+    // on-demand 3D view (Engine /warp/view) instead. Marker code kept dormant (uncalled).
 #if ENABLE_RENDER_SELECTION_CENTER
     _render_selection_center();
 #endif // ENABLE_RENDER_SELECTION_CENTER
@@ -8295,6 +8299,245 @@ void GLCanvas3D::_render_sequential_clearance()
         || can_sequential_clearance_show_in_gizmo()) {
         m_sequential_print_clearance.render();
     }
+}
+
+// ATN: green -> yellow -> red ramp for a 0..1 SUPPORT severity score.
+static ColorRGBA atn_severity_color(float s)
+{
+    s = std::clamp(s, 0.0f, 1.0f);
+    const float r = (s < 0.5f) ? (s * 2.0f) : 1.0f;
+    const float g = (s < 0.5f) ? 1.0f : (1.0f - (s - 0.5f) * 2.0f);
+    return ColorRGBA(r, g, 0.0f, 1.0f);
+}
+
+// ATN: blue -> purple -> red ramp for a 0..1 THERMAL (curl/warp) severity score,
+// deliberately distinct from the support ramp so the two layers never get confused.
+static ColorRGBA atn_thermal_color(float s)
+{
+    s = std::clamp(s, 0.0f, 1.0f);
+    return ColorRGBA(s, 0.1f, 1.0f - s, 1.0f);
+}
+
+// ATN: failure utilisation [0..1] -> green (safe) through yellow to red (will fail).
+static ColorRGBA atn_fea_color(float u)
+{
+    u = std::clamp(u, 0.0f, 1.0f);
+    return ColorRGBA(u, 1.0f - u, 0.1f, 1.0f);
+}
+
+// ATN: risk markers in the Preview. Two independent layers, each its own toggle:
+//   * Support  (green->red): a sphere at every floating-extrusion spot (extrusion
+//     printed in mid-air = support too weak / missing), sized by unsupported run.
+//   * Thermal  (blue->red): a sphere at every meaningfully curled-up extrusion
+//     (cooling stress / warp), sized by curl height.
+// No-op until a slice has produced the data (support needs "detect floating
+// extrusions"; thermal needs the curled-extrusion estimation step, on by default).
+void GLCanvas3D::_render_atn_risk_markers()
+{
+    if (m_canvas_type != ECanvasType::CanvasPreview)
+        return;
+    if (!m_show_atn_risk_markers && !m_show_atn_thermal_markers && !m_show_atn_fea_markers)
+        return;
+
+    if (m_atn_markers_dirty) {
+        _atn_recompute_markers();
+        m_atn_markers_dirty = false;
+    }
+    const bool draw_support = m_show_atn_risk_markers    && !m_atn_support_cache.empty();
+    const bool draw_thermal = m_show_atn_thermal_markers && !m_atn_thermal_cache.empty();
+    const bool draw_fea     = m_show_atn_fea_markers     && !m_atn_fea_cache.empty();
+    if (!draw_support && !draw_thermal && !draw_fea)
+        return;
+
+    if (!m_atn_marker_sphere.is_initialized())
+        m_atn_marker_sphere.init_from(its_make_sphere(1.0, 0.26)); // ~PI/12 facet angle
+
+    GLShaderProgram* shader = wxGetApp().get_shader("gouraud_light");
+    if (shader == nullptr)
+        return;
+    shader->start_using();
+
+    const Camera&      camera = wxGetApp().plater()->get_camera();
+    const Transform3d& view   = camera.get_view_matrix();
+    shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+    shader->set_uniform("emission_factor", 0.3f);
+    glsafe(::glEnable(GL_DEPTH_TEST));
+
+    auto draw_cache = [&](const std::vector<AtnMarker>& cache) {
+        for (const AtnMarker& mk : cache) {
+            m_atn_marker_sphere.set_color(mk.color);
+            const Transform3d model = Geometry::assemble_transform(mk.pos, Vec3d::Zero(), double(mk.radius) * Vec3d::Ones());
+            shader->set_uniform("view_model_matrix", view * model);
+            const Matrix3d view_normal = view.matrix().block(0, 0, 3, 3) * model.matrix().block(0, 0, 3, 3).inverse().transpose();
+            shader->set_uniform("view_normal_matrix", view_normal);
+            m_atn_marker_sphere.render();
+        }
+    };
+    if (draw_support) draw_cache(m_atn_support_cache);
+    if (draw_thermal) draw_cache(m_atn_thermal_cache);
+    if (draw_fea)     draw_cache(m_atn_fea_cache);
+
+    shader->stop_using();
+}
+
+// ATN: ingest the reduced-FEA support-failure result from the panel. positions are world-mm
+// (the support column top), utils are [0..1] failure utilisation. Coloured green->red and
+// sized up with utilisation so the supports about to fail read loudest.
+void GLCanvas3D::set_atn_fea_markers(const std::vector<Vec3d>& positions, const std::vector<float>& utils)
+{
+    m_atn_fea_cache.clear();
+    const size_t n = std::min(positions.size(), utils.size());
+    m_atn_fea_cache.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        const float u = std::clamp(utils[i], 0.0f, 1.0f);
+        m_atn_fea_cache.push_back({ positions[i], atn_fea_color(u), float(0.7 + 1.3 * u) });
+    }
+    m_show_atn_fea_markers = !m_atn_fea_cache.empty();
+    m_dirty = true;
+    request_extra_frame();   // panel-driven update -> force a repaint so the spheres appear at once
+}
+
+// ATN: recompute both risk caches from the current slice (called when the slice
+// changes). Two independent layers:
+//   * Support STRENGTH (green->red): tall, slender, under-walled support columns
+//     that bend/buckle/snap during printing. Built by walking support layers
+//     TOP-DOWN, linking each layer's support islands to the ones above by bbox
+//     overlap and propagating the height of support carried above each cross-section.
+//     snap = (height-above / width) / wall-factor, so a tall column that necks down
+//     thin with few walls peaks red at its weak neck. This REPLACES the old mid-air
+//     "coverage" check (the floating-extrusion highlights), which assumed any support
+//     present would hold -- it cannot see a doomed support.
+//   * Thermal WARP (blue->red): the first-layer footprint extremities that peel off
+//     the plate as the part contracts.
+// Coarse v1 models, to be calibrated from real outcomes by the learning loop.
+void GLCanvas3D::_atn_recompute_markers()
+{
+    m_atn_support_cache.clear();
+    m_atn_thermal_cache.clear();
+
+    const Print* print = fff_print();
+    if (print == nullptr)
+        return;
+
+    const double sf2  = SCALING_FACTOR * SCALING_FACTOR; // scaled area -> mm^2
+    const size_t kMax = 2000;
+
+    auto bb_overlap = [](const BoundingBox& a, const BoundingBox& b) {
+        return a.min.x() <= b.max.x() && b.min.x() <= a.max.x() &&
+               a.min.y() <= b.max.y() && b.min.y() <= a.max.y();
+    };
+    auto centroid_mm = [](const Polygon& poly) {
+        Vec2d c(0.0, 0.0);
+        if (poly.points.empty()) return c;
+        for (const Point& p : poly.points) c += Vec2d(unscale<double>(p.x()), unscale<double>(p.y()));
+        return Vec2d(c / double(poly.points.size()));
+    };
+
+    for (const PrintObject* po : print->objects()) {
+        for (const PrintInstance& inst : po->instances()) {
+            const Vec2d origin(unscale<double>(inst.shift.x()), unscale<double>(inst.shift.y()));
+
+            // ===== Support strength: tall, slender, under-walled columns snap =====
+            std::vector<const SupportLayer*> slayers;
+            for (const SupportLayer* sl : po->support_layers())
+                slayers.push_back(sl);
+            const int Ns = (int) slayers.size();
+            if (Ns > 1) {
+                int wc = po->config().tree_support_wall_count.value;
+                if (wc <= 0) wc = 1;                                            // 0 = auto -> a single thin wall
+                const double wall_factor = 0.7 + 0.5 * double(std::min(wc, 3)); // 1->1.2 .. 3->2.2
+                struct Above { BoundingBox bb; double h_above; };
+                std::vector<Above> above;
+                for (int i = Ns - 1; i >= 0 && m_atn_support_cache.size() < kMax; --i) {
+                    const SupportLayer* sl = slayers[i];
+                    const double        lh = double(sl->height);
+                    const ExPolygons&   islands = !sl->support_islands.empty() ? sl->support_islands : sl->base_areas;
+                    std::vector<Above> curr; curr.reserve(islands.size());
+                    for (const ExPolygon& isl : islands) {
+                        const BoundingBox bb = isl.contour.bounding_box();
+                        double h_above = 0.0;
+                        for (const Above& a : above)
+                            if (bb_overlap(bb, a.bb))
+                                h_above = std::max(h_above, a.h_above);
+                        curr.push_back({ bb, h_above + lh });
+                        const double area = isl.area() * sf2;
+                        if (area < 0.05) continue;
+                        const double width       = std::sqrt(area);
+                        const double slenderness = h_above / std::max(width, 0.3);
+                        const double sev         = std::clamp(((slenderness / wall_factor) - 6.0) / 14.0, 0.0, 1.0);
+                        if (sev <= 0.0) continue;
+                        const Vec2d c = centroid_mm(isl.contour);
+                        m_atn_support_cache.push_back({ Vec3d(c.x() + origin.x(), c.y() + origin.y(), double(sl->print_z)),
+                                                        atn_severity_color(float(sev)), float(0.6 + 1.2 * sev) });
+                        if (m_atn_support_cache.size() >= kMax) break;
+                    }
+                    above.swap(curr);
+                }
+            }
+
+            // ===== Thermal warp: first-layer footprint extremities =====
+            const auto& layers = po->layers();
+            if (!layers.empty() && m_atn_thermal_cache.size() < kMax) {
+                const double H = double(layers.back()->print_z);
+                const double height_factor = std::min(1.0, H / 30.0);
+                for (const ExPolygon& isl : layers.front()->lslices) {
+                    const Points& pts = isl.contour.points;
+                    if (pts.size() < 3) continue;
+                    Vec2d c(0.0, 0.0);
+                    for (const Point& p : pts) c += Vec2d(unscale<double>(p.x()), unscale<double>(p.y()));
+                    c /= double(pts.size());
+                    double maxr = 1e-6;
+                    for (const Point& p : pts)
+                        maxr = std::max(maxr, (Vec2d(unscale<double>(p.x()), unscale<double>(p.y())) - c).norm());
+                    double since = 1e9; Vec2d prev(0.0, 0.0); bool have_prev = false;
+                    for (size_t k = 0; k <= pts.size(); ++k) {
+                        const Point& pt = pts[k % pts.size()];
+                        const Vec2d wp(unscale<double>(pt.x()), unscale<double>(pt.y()));
+                        if (have_prev) since += (wp - prev).norm();
+                        prev = wp; have_prev = true;
+                        if (since < 3.0) continue;
+                        since = 0.0;
+                        const double rnorm = (wp - c).norm() / maxr;
+                        const double warp  = std::min(1.0, rnorm * rnorm * height_factor);
+                        if (warp < 0.35) continue;
+                        m_atn_thermal_cache.push_back({ Vec3d(wp.x() + origin.x(), wp.y() + origin.y(), 0.2),
+                                                        atn_thermal_color(float(warp)), float(0.7 + 1.0 * warp) });
+                        if (m_atn_thermal_cache.size() >= kMax) break;
+                    }
+                    if (m_atn_thermal_cache.size() >= kMax) break;
+                }
+            }
+        }
+    }
+}
+
+// ATN: small Preview overlay to switch the two risk layers on/off independently.
+void GLCanvas3D::_render_atn_risk_overlay()
+{
+    if (m_canvas_type != ECanvasType::CanvasPreview)
+        return;
+
+    const Print* print = fff_print();
+    if (print == nullptr)
+        return;
+    bool sliced = false;
+    for (const PrintObject* po : print->objects())
+        if (!po->layers().empty()) { sliced = true; break; }
+    if (!sliced)
+        return;
+
+    ImGuiWrapper& imgui = *wxGetApp().imgui();
+    imgui.push_toolbar_style(get_scale());
+    imgui.set_next_window_pos(imgui.scaled(1.0f), imgui.scaled(4.0f), ImGuiCond_FirstUseEver, 0.0f, 0.0f);
+    imgui.begin(_L("Risk overlay"), ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse);
+    if (imgui.bbl_checkbox(_L("Support risk (mid-air)"), m_show_atn_risk_markers))
+        set_as_dirty();
+    if (imgui.bbl_checkbox(_L("Thermal / warp"), m_show_atn_thermal_markers))
+        set_as_dirty();
+    if (!m_atn_fea_cache.empty() && imgui.bbl_checkbox(_L("Warp FEA (supports)"), m_show_atn_fea_markers))
+        set_as_dirty();
+    imgui.end();
+    imgui.pop_toolbar_style();
 }
 
 void GLCanvas3D::_check_and_update_toolbar_icon_scale()

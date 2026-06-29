@@ -100,6 +100,10 @@ static std::string get_view_type_string(libvgcode::EViewType view_type)
 // ORCA: Add Pressure Advance visualization support
     else if (view_type == libvgcode::EViewType::PressureAdvance)
         return _u8L("Pressure Advance");
+    else if (view_type == libvgcode::EViewType::Thermal)
+        return _u8L("Heat-soak");
+    else if (view_type == libvgcode::EViewType::WarpStress)
+        return _u8L("Warp stress");
     return "";
 }
 
@@ -1089,6 +1093,8 @@ void GCodeViewer::update_by_mode(ConfigOptionMode mode)
     view_type_items.push_back(libvgcode::EViewType::LayerTimeLogarithmic);
     view_type_items.push_back(libvgcode::EViewType::FanSpeed);
     view_type_items.push_back(libvgcode::EViewType::Temperature);
+    view_type_items.push_back(libvgcode::EViewType::Thermal); // ATN: heat-soak / melt risk
+    view_type_items.push_back(libvgcode::EViewType::WarpStress); // ATN: warp / contraction stress
 // ORCA: Add Pressure Advance visualization support
     view_type_items.push_back(libvgcode::EViewType::PressureAdvance);
     //if (mode == ConfigOptionMode::comDevelop) {
@@ -3791,6 +3797,8 @@ void GCodeViewer::render_legend(float &legend_height, int canvas_width, int canv
     }
     case libvgcode::EViewType::FanSpeed:       { imgui.title(_u8L("Fan Speed (%)")); break; }
     case libvgcode::EViewType::Temperature:    { imgui.title(_u8L("Temperature (°C)")); break; }
+    case libvgcode::EViewType::Thermal:        { imgui.title(_u8L("Heat-soak (°C)")); break; }
+    case libvgcode::EViewType::WarpStress:     { imgui.title(_u8L("Warp stress (MPa)")); break; }
 // ORCA: Add Pressure Advance visualization support
     case libvgcode::EViewType::PressureAdvance:{ imgui.title(_u8L("Pressure Advance")); break; }
     case libvgcode::EViewType::VolumetricFlowRate:
@@ -4064,6 +4072,8 @@ void GCodeViewer::render_legend(float &legend_height, int canvas_width, int canv
     }
     case libvgcode::EViewType::FanSpeed:                 { append_range(m_viewer.get_color_range(libvgcode::EViewType::FanSpeed), 0); break; }
     case libvgcode::EViewType::Temperature:              { append_range(m_viewer.get_color_range(libvgcode::EViewType::Temperature), 0); break; }
+    case libvgcode::EViewType::Thermal:                  { append_range(m_viewer.get_color_range(libvgcode::EViewType::Thermal), 0); break; }
+    case libvgcode::EViewType::WarpStress:               { append_range(m_viewer.get_color_range(libvgcode::EViewType::WarpStress), 0); break; }
 // ORCA: Add Pressure Advance visualization support
     case libvgcode::EViewType::PressureAdvance:          { append_range(m_viewer.get_color_range(libvgcode::EViewType::PressureAdvance), 3); break; }
     case libvgcode::EViewType::LayerTimeLinear:          { append_range(m_viewer.get_color_range(libvgcode::EViewType::LayerTimeLinear), true); break; }

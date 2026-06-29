@@ -626,6 +626,22 @@ private:
     PrinterTechnology current_printer_technology() const;
 
     bool        m_show_world_axes{true};
+    // ATN: when true, the prepare view draws risk markers (spheres) at the
+    // floating-extrusion spots from the last slice, sized/coloured by severity.
+    bool        m_show_atn_risk_markers{false};
+    // ATN: independent thermal-warp layer -- spheres at curled-up extrusions.
+    bool        m_show_atn_thermal_markers{false};
+    // ATN: reduced-FEA support-failure layer -- spheres on the supports the Engine
+    // predicts will fail, fed asynchronously by the panel (not from slice geometry).
+    bool        m_show_atn_fea_markers{false};
+    GLModel     m_atn_marker_sphere;
+    // ATN: cached risk markers, recomputed per slice (the support-strength column
+    // analysis is too expensive to redo every frame).
+    struct AtnMarker { Vec3d pos; ColorRGBA color; float radius; };
+    std::vector<AtnMarker> m_atn_support_cache;
+    std::vector<AtnMarker> m_atn_thermal_cache;
+    std::vector<AtnMarker> m_atn_fea_cache;        // panel-fed from the Engine /warp result
+    bool                   m_atn_markers_dirty{true};
     Bed3D::Axes m_axes;
     //BBS:record key botton frequency
     int auto_orient_count = 0;
@@ -772,6 +788,17 @@ public:
     void on_change_color_mode(bool is_dark, bool reinit = true);
     const bool get_dark_mode_status() { return m_is_dark; }
     void set_as_dirty() { m_dirty = true; }
+    void set_show_atn_risk_markers(bool show) { m_show_atn_risk_markers = show; m_dirty = true; }
+    bool get_show_atn_risk_markers() const { return m_show_atn_risk_markers; }
+    void set_show_atn_thermal_markers(bool show) { m_show_atn_thermal_markers = show; m_dirty = true; }
+    bool get_show_atn_thermal_markers() const { return m_show_atn_thermal_markers; }
+    void set_show_atn_fea_markers(bool show) { m_show_atn_fea_markers = show; m_dirty = true; }
+    bool get_show_atn_fea_markers() const { return m_show_atn_fea_markers; }
+    // Panel-fed reduced-FEA support-failure markers: world-mm positions + failure
+    // utilisation [0..1]. Replaces any prior set and turns the layer on.
+    void set_atn_fea_markers(const std::vector<Vec3d>& positions, const std::vector<float>& utils);
+    // ATN: a reslice makes any prior FEA result stale -- drop it with the dirty flag.
+    void atn_invalidate_markers() { m_atn_markers_dirty = true; m_atn_fea_cache.clear(); m_show_atn_fea_markers = false; }
     void requires_check_outside_state() { m_requires_check_outside_state = true; }
 
     unsigned int get_volumes_count() const { return (unsigned int)m_volumes.volumes.size(); }
@@ -1262,6 +1289,9 @@ private:
     void _render_plane() const;
     void _render_selection();
     void _render_sequential_clearance();
+    void _render_atn_risk_markers();
+    void _render_atn_risk_overlay();
+    void _atn_recompute_markers();
 #if ENABLE_RENDER_SELECTION_CENTER
     void _render_selection_center() { m_selection.render_center(m_gizmos.is_dragging()); }
 #endif // ENABLE_RENDER_SELECTION_CENTER

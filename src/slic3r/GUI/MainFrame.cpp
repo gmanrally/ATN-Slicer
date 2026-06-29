@@ -2037,6 +2037,21 @@ wxBoxSizer* MainFrame::create_side_tools()
 
                 p->append_button(send_gcode_btn);
                 p->append_button(export_gcode_btn);
+#ifdef ATN_FARM_TOOLS
+                // ATN: Send to Farm also belongs here -- the farm's main fleet (K2/Creality and
+                // other 3rd-party hosts) lands in this branch, so the button must show for them too.
+                SideButton* send_to_farm_btn_tp = new SideButton(p, _L("Send to Farm"), "");
+                send_to_farm_btn_tp->SetCornerRadius(0);
+                send_to_farm_btn_tp->Bind(wxEVT_BUTTON, [this, p](wxCommandEvent&) {
+                    m_print_btn->SetLabel(_L("Send to Farm"));
+                    m_print_select = eSendToFarm;
+                    m_print_btn->Enable(true);
+                    this->Layout();
+                    fit_tab_labels(); // ORCA on label change
+                    p->Dismiss();
+                });
+                p->append_button(send_to_farm_btn_tp);
+#endif
             }
             else {
                 //Orca Slicer Buttons

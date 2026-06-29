@@ -98,6 +98,10 @@ enum class EViewType : uint8_t
     Acceleration,
     // ORCA: Add Jerk visualization support
     Jerk,
+    // ATN: per-layer heat-soak / melt-risk view
+    Thermal,
+    // ATN: per-layer thermal contraction stress (warp / delamination) view
+    WarpStress,
     Tool,
     COUNT
 };

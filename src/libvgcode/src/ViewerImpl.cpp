@@ -1517,6 +1517,16 @@ Color ViewerImpl::get_vertex_color(const PathVertex& v) const
     {
         return m_jerk_range.get_color_at(v.jerk);
     }
+    // ATN: per-layer heat-soak / melt risk
+    case EViewType::Thermal:
+    {
+        return v.is_travel() ? get_option_color(move_type_to_option(v.type)) : m_thermal_risk_range.get_color_at(v.thermal_risk);
+    }
+    // ATN: per-layer thermal contraction stress (warp)
+    case EViewType::WarpStress:
+    {
+        return v.is_travel() ? get_option_color(move_type_to_option(v.type)) : m_warp_stress_range.get_color_at(v.warp_stress);
+    }
     case EViewType::VolumetricFlowRate:
     {
         return v.is_travel() ? get_option_color(move_type_to_option(v.type)) : m_volumetric_rate_range.get_color_at(v.volumetric_rate());
@@ -1612,6 +1622,8 @@ const ColorRange& ViewerImpl::get_color_range(EViewType type) const
     case EViewType::Acceleration:             { return m_acceleration_range; }
     // ORCA: Add Jerk visualization support
     case EViewType::Jerk:                     { return m_jerk_range; }
+    case EViewType::Thermal:                  { return m_thermal_risk_range; }
+    case EViewType::WarpStress:               { return m_warp_stress_range; }
     case EViewType::VolumetricFlowRate:       { return m_volumetric_rate_range; }
     case EViewType::ActualVolumetricFlowRate: { return m_actual_volumetric_rate_range; }
     case EViewType::LayerTimeLinear:          { return m_layer_time_range[0]; }
@@ -1636,6 +1648,8 @@ void ViewerImpl::set_color_range_palette(EViewType type, const Palette& palette)
     case EViewType::Acceleration:             { m_acceleration_range.set_palette(palette);     break; }
     // ORCA: Add Jerk visualization support
     case EViewType::Jerk:                     { m_jerk_range.set_palette(palette);             break; }
+    case EViewType::Thermal:                  { m_thermal_risk_range.set_palette(palette);     break; }
+    case EViewType::WarpStress:               { m_warp_stress_range.set_palette(palette);      break; }
     case EViewType::VolumetricFlowRate:       { m_volumetric_rate_range.set_palette(palette); break; }
     case EViewType::ActualVolumetricFlowRate: { m_actual_volumetric_rate_range.set_palette(palette); break; }
     case EViewType::LayerTimeLinear:          { m_layer_time_range[0].set_palette(palette);   break; }
@@ -1835,6 +1849,8 @@ void ViewerImpl::update_color_ranges()
     m_acceleration_range.reset();
     // ORCA: Add Jerk visualization support
     m_jerk_range.reset();
+    m_thermal_risk_range.reset();   // ATN
+    m_warp_stress_range.reset();    // ATN: warp
     m_volumetric_rate_range.reset();
     m_actual_volumetric_rate_range.reset();
     m_layer_time_range[0].reset(); // ColorRange::EType::Linear
@@ -1851,6 +1867,8 @@ void ViewerImpl::update_color_ranges()
             }
             m_fan_speed_range.update(round_to_bin(v.fan_speed));
             m_temperature_range.update(round_to_bin(v.temperature));
+            m_thermal_risk_range.update(v.thermal_risk);   // ATN: heat-soak
+            m_warp_stress_range.update(v.warp_stress);     // ATN: warp stress
             // ORCA: Add Pressure Advance visualization support
             if (v.pressure_advance >= 0.0f)
                 m_pressure_advance_range.update(v.pressure_advance);

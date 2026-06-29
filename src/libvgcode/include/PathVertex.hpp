@@ -101,6 +101,16 @@ struct PathVertex
     // Jerk value
     //
     float jerk{ 0.0f };
+    //
+    // ATN: per-layer heat-soak interface temperature (deg C) for the Thermal view.
+    // Kept LAST so existing aggregate-initialisers (which stop at jerk) stay valid.
+    //
+    float thermal_risk{ 0.0f };
+    //
+    // ATN: per-layer thermal contraction stress (MPa) for the Warp-stress view. Also kept
+    // LAST so existing aggregate-initialisers (which stop at jerk) stay valid.
+    //
+    float warp_stress{ 0.0f };
 
     //
     // Return true if the segment is an extrusion move

@@ -10,6 +10,7 @@
 #include <wx/dialog.h>
 #include <string>
 #include <vector>
+#include <memory>
 
 class wxTextCtrl;
 class wxChoice;
@@ -24,6 +25,7 @@ class SendToFarmDialog : public wxDialog
 {
 public:
     explicit SendToFarmDialog(wxWindow* parent);
+    ~SendToFarmDialog() override;
 
 private:
     std::string farm_url() const;
@@ -43,6 +45,12 @@ private:
     wxButton*     m_send{ nullptr };
 
     std::vector<int> m_printer_ids;   // index in m_printer -> farm printer id
+
+    // ATN: shared liveness flag. Async HTTP callbacks post wxGetApp().CallAfter
+    // lambdas that touch this dialog's members; if the window is closed before a
+    // callback runs, the lambda would dereference freed memory. Each lambda captures
+    // a copy of this flag and bails when it's false (set in the destructor).
+    std::shared_ptr<bool> m_alive = std::make_shared<bool>(true);
 };
 
 } // namespace GUI

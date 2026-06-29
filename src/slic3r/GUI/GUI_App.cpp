@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <iterator>
 #include <exception>
+#include <cstdio>
 #include <cstdlib>
 #include <regex>
 #include <thread>
@@ -2474,6 +2475,35 @@ void GUI_App::init_single_instance_checker(const std::string &name, const std::s
 
 bool GUI_App::OnInit()
 {
+    // ATN: log the exact message of any unhandled C++ exception before the runtime
+    // aborts, so a crash (e.g. the Send-to-Farm one) names its cause in the log
+    // instead of a bare 0xC0000409. An uncaught throw lands in std::terminate.
+    std::set_terminate([]() {
+        // Write DIRECTLY to a file with an explicit flush. The buffered boost log is
+        // lost when abort() kills the process, so an unhandled-exception crash would
+        // otherwise leave no trace. This names the exact exception in atn_crash.txt.
+        auto dump = [](const char* what) {
+            try {
+                const std::string p = (boost::filesystem::path(data_dir()) / "atn_crash.txt").string();
+                if (FILE* f = std::fopen(p.c_str(), "a")) {
+                    std::fprintf(f, "TERMINATE: %s\n", what ? what : "");
+                    std::fflush(f);
+                    std::fclose(f);
+                }
+            } catch (...) {}
+        };
+        try {
+            if (auto e = std::current_exception())
+                std::rethrow_exception(e);
+            dump("std::terminate with no active exception");
+        } catch (const std::exception& ex) {
+            dump(ex.what());
+        } catch (...) {
+            dump("non-std exception");
+        }
+        std::abort();
+    });
+
     try {
         return on_init_inner();
     } catch (const std::exception& e) {

@@ -295,6 +295,9 @@ private:
     ColorRange m_acceleration_range;
     // ORCA: Add Jerk visualization support
     ColorRange m_jerk_range;
+    // ATN: Thermal (heat-soak) view
+    ColorRange m_thermal_risk_range;
+    ColorRange m_warp_stress_range;   // ATN: warp / contraction stress
     ColorRange m_volumetric_rate_range;
     ColorRange m_actual_volumetric_rate_range;
     std::array<ColorRange, COLOR_RANGE_TYPES_COUNT> m_layer_time_range{
