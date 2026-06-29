@@ -1093,8 +1093,8 @@ void GCodeViewer::update_by_mode(ConfigOptionMode mode)
     view_type_items.push_back(libvgcode::EViewType::LayerTimeLogarithmic);
     view_type_items.push_back(libvgcode::EViewType::FanSpeed);
     view_type_items.push_back(libvgcode::EViewType::Temperature);
-    view_type_items.push_back(libvgcode::EViewType::Thermal); // ATN: heat-soak / melt risk
-    view_type_items.push_back(libvgcode::EViewType::WarpStress); // ATN: warp / contraction stress
+    // ATN: native heat-soak ("Thermal") + "Warp stress" gcode views removed for release -- both now
+    // live in the ATN Engine 3D view (engine is the single source of truth; avoids drift/wrong numbers).
 // ORCA: Add Pressure Advance visualization support
     view_type_items.push_back(libvgcode::EViewType::PressureAdvance);
     //if (mode == ConfigOptionMode::comDevelop) {
