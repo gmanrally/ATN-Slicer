@@ -285,6 +285,18 @@ if (WIN32)
         install(TARGETS OrcaSlicer_app_gui RUNTIME DESTINATION ".")
     endif ()
     install(FILES ${output_dlls_${build_type}} DESTINATION ".")
+    # ATN: bundle the local Engine sidecar next to the slicer so AtnPanel can auto-spawn it.
+    # Built separately (atn-engine/ via PyInstaller); only included when the exe is present, so a
+    # plain dev build still configures. Override the path with -DATN_ENGINE_EXE=... if needed.
+    if (NOT ATN_ENGINE_EXE)
+        set(ATN_ENGINE_EXE "${CMAKE_SOURCE_DIR}/../atn-engine/dist/ATNEngine.exe")
+    endif ()
+    if (EXISTS "${ATN_ENGINE_EXE}")
+        install(PROGRAMS "${ATN_ENGINE_EXE}" DESTINATION ".")
+        message(STATUS "ATN: bundling Engine sidecar -> ${ATN_ENGINE_EXE}")
+    else ()
+        message(WARNING "ATN: Engine exe not found (${ATN_ENGINE_EXE}); installer will NOT include the sidecar")
+    endif ()
 else ()
     install(TARGETS OrcaSlicer RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" BUNDLE DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif ()

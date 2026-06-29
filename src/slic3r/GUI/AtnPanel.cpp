@@ -31,15 +31,49 @@
 #include <wx/sizer.h>
 #include <wx/utils.h>
 #include <wx/webview.h>
+#include <wx/stdpaths.h>
+#include <wx/filename.h>
+#include <wx/socket.h>
 
 using json = nlohmann::json;
 
 namespace Slic3r {
 namespace GUI {
 
+// --- ATN Engine auto-spawn ---------------------------------------------------
+// The Engine is a local sidecar on 127.0.0.1:8790. In a release install the bundled
+// ATNEngine.exe sits next to the slicer; we launch it on demand and pass our PID so it
+// self-terminates when the slicer exits. In dev we leave a running `python run.py` alone.
+static bool atn_port_open(int port)
+{
+    wxIPV4address addr;
+    addr.Hostname("127.0.0.1");
+    addr.Service(port);
+    wxSocketClient sock(wxSOCKET_BLOCK);
+    sock.SetTimeout(1);
+    const bool ok = sock.Connect(addr, true);
+    sock.Close();
+    return ok;
+}
+
+static void atn_ensure_engine()
+{
+    if (atn_port_open(8790))
+        return;   // already serving (dev `python run.py`, or a prior instance)
+    wxFileName exe(wxStandardPaths::Get().GetExecutablePath());
+    const wxString engine = exe.GetPathWithSep() + "ATNEngine.exe";
+    if (!wxFileExists(engine))
+        return;   // plain dev build with no bundled engine -> user runs python run.py
+    wxSetEnv("ATN_PARENT_PID", wxString::Format("%lu", (unsigned long) wxGetProcessId()));
+    wxExecute("\"" + engine + "\"", wxEXEC_ASYNC | wxEXEC_HIDE_CONSOLE);
+    BOOST_LOG_TRIVIAL(info) << "AtnPanel: launched bundled ATN Engine sidecar";
+}
+
 AtnPanel::AtnPanel(wxWindow* parent)
     : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize)
 {
+    atn_ensure_engine();   // start the local Engine sidecar if it isn't already running
+
     // URL priority: ATN_PANEL_URL env var (dev override) > app config > hosted assistant.
     std::string url;
     if (const char* env_url = std::getenv("ATN_PANEL_URL"); env_url != nullptr && *env_url != 0)
