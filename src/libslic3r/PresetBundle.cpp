@@ -4348,6 +4348,10 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
     };
     clear_compatible_printers(config);
 
+    // Dynamic per-nozzle filament mapping reflects live device state, not a stored setting;
+    // drop it from any imported config so it only comes from the connected printer.
+    config.erase("enable_filament_dynamic_map");
+
 #if 0
     size_t num_extruders = (printer_technology == ptFFF) ?
         std::min(config.option<ConfigOptionFloats>("nozzle_diameter"  )->values.size(),

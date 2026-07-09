@@ -1483,6 +1483,13 @@ int CLI::run(int argc, char **argv)
         if (cp && cp->value)
             return run_cloud_print(m_config, m_input_files.empty() ? std::string() : m_input_files.front());
     }
+    // The Filament Track Switch flags are live-device state with no meaning in headless slicing;
+    // default both off unless explicitly provided on the command line, so an old 3MF that had
+    // them enabled still slices without the switch behavior.
+    if (!m_extra_config.has("has_filament_switcher"))
+        m_extra_config.set_key_value("has_filament_switcher", new ConfigOptionBool(false));
+    if (!m_extra_config.has("enable_filament_dynamic_map"))
+        m_extra_config.set_key_value("enable_filament_dynamic_map", new ConfigOptionBool(false));
 
     m_extra_config.apply(m_config, true);
     m_extra_config.normalize_fdm();
