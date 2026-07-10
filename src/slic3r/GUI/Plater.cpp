@@ -445,10 +445,111 @@ enum class ActionButtonType : int {
     abSendGCode
 };
 
+// Interactive title row for the sidebar extruder cards: "<title> ( <count> ) [edit]". The count shows the
+// extruder's physical nozzle count on multi-nozzle printers (hidden elsewhere, SetCount(-1)), and the
+// trailing button opens the manual nozzle-count editor when enabled (a plain dot otherwise).
+class HoverLabel : public wxPanel
+{
+public:
+    HoverLabel(wxWindow *parent, const wxString &label) : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE)
+    {
+#ifdef __WXOSX__
+        SetBackgroundColour("#F7F7F7");
+#else
+        SetBackgroundColour(*wxWHITE);
+#endif
+        auto sizer = new wxBoxSizer(wxHORIZONTAL);
+
+        m_label = new wxStaticText(this, wxID_ANY, label, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+        m_label->SetFont(Label::Body_13);
+        m_label->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#6B6B6B")));
+
+        m_brace_left = new wxStaticText(this, wxID_ANY, "(", wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+        m_brace_left->SetFont(Label::Body_13);
+        m_brace_left->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#262E30")));
+        m_brace_left->Hide();
+
+        m_count = new wxStaticText(this, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+        m_count->SetFont(Label::Body_13.Bold());
+        m_count->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#262E30")));
+        m_count->Hide();
+
+        m_brace_right = new wxStaticText(this, wxID_ANY, ")", wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+        m_brace_right->SetFont(Label::Body_13);
+        m_brace_right->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#262E30")));
+        m_brace_right->Hide();
+
+        m_hover_btn = new ScalableButton(this, wxID_ANY, "dot");
+        m_hover_btn->SetMinSize(wxSize(FromDIP(25), -1));
+#ifdef __WXOSX__
+        m_hover_btn->SetBackgroundColour("#F7F7F7");
+#else
+        m_hover_btn->SetBackgroundColour(*wxWHITE);
+#endif
+        m_hover_btn->Bind(wxEVT_COMMAND_BUTTON_CLICKED, [this](auto &evt) {
+            if (m_enabled && m_hover_on_click)
+                m_hover_on_click();
+        });
+
+        sizer->Add(m_label, 0, wxALIGN_CENTER_VERTICAL);
+        sizer->Add(m_brace_left, 0, wxALIGN_CENTER_VERTICAL);
+        sizer->Add(m_count, 0, wxALIGN_CENTER_VERTICAL);
+        sizer->Add(m_brace_right, 0, wxALIGN_CENTER_VERTICAL);
+        sizer->Add(m_hover_btn, 0, wxLEFT | wxALIGN_CENTER_VERTICAL, FromDIP(5));
+
+        SetSizerAndFit(sizer);
+        Layout();
+    }
+
+    void EnableEdit(bool enable)
+    {
+        m_enabled = enable;
+        m_hover_btn->SetBitmap_(enable ? "edit" : "dot");
+    }
+
+    void SetOnHoverClick(std::function<void()> on_click) { m_hover_on_click = std::move(on_click); }
+
+    void SetCount(int count)
+    {
+        if (count < 0) {
+            m_count->Hide();
+            m_brace_left->Hide();
+            m_brace_right->Hide();
+        } else {
+            m_count->SetLabel(wxString::Format("%d", count));
+            m_count->Show();
+            m_brace_left->Show();
+            m_brace_right->Show();
+        }
+        Layout();
+        Fit();
+    }
+
+    void SetTitle(const wxString &title)
+    {
+        m_label->SetLabel(title);
+        Layout();
+        Fit();
+    }
+
+    void Rescale() { m_hover_btn->msw_rescale(); }
+
+private:
+    wxStaticText   *m_label;
+    wxStaticText   *m_brace_left;
+    wxStaticText   *m_count;
+    wxStaticText   *m_brace_right;
+    ScalableButton *m_hover_btn;
+
+    std::function<void()> m_hover_on_click;
+    bool                  m_enabled{false};
+};
+
 struct ExtruderGroup : StaticGroup
 {
     ExtruderGroup(wxWindow * parent, int index, wxString const &title);
     wxStaticBoxSizer *sizer        = nullptr;
+    HoverLabel *      hover_label  = nullptr;
     ScalableButton *  btn_edit     = nullptr;
     ComboBox *        combo_diameter = nullptr;
     ComboBox *        combo_flow = nullptr;
@@ -478,11 +579,16 @@ struct ExtruderGroup : StaticGroup
 
     void update_ams();
     void SetTitle(const wxString& title);
+    void SetCount(int count) { if (hover_label) hover_label->SetCount(count); }
+    void SetEditEnabled(bool enable) { if (hover_label) hover_label->EnableEdit(enable); }
+    void SetOnHoverClick(std::function<void()> on_click) { if (hover_label) hover_label->SetOnHoverClick(std::move(on_click)); }
 
     void sync_ams(MachineObject const *obj, std::vector<DevAms *> const &ams4, std::vector<DevAms *> const &ams1);
 
     void Rescale()
     {
+        if (hover_label)
+            hover_label->Rescale();
         if (btn_edit)
             btn_edit->msw_rescale();
         btn_up->msw_rescale();
@@ -1065,13 +1171,18 @@ public:
 };
 
 ExtruderGroup::ExtruderGroup(wxWindow * parent, int index, wxString const &title)
-    : StaticGroup(parent, wxID_ANY, title)
+    : StaticGroup(parent, wxID_ANY, wxString())
 {
     SetFont(Label::Body_10);
     SetForegroundColour(wxColour("#CECECE"));
     SetBorderColor(wxColour("#EEEEEE"));
     SetCornerRadius(FromDIP(PRINTER_PANEL_RADIUS)); // ORCA match radius with other boxes
     ShowBadge(true);
+
+    // The title lives in an interactive row inside the card (with the nozzle-count badge and its edit
+    // button) instead of being painted on the border by StaticGroup.
+    hover_label = new HoverLabel(this, title);
+
     // Nozzle
     wxStaticText *label_diameter = new wxStaticText(this, wxID_ANY, _L("Diameter"));
     label_diameter->SetFont(Label::Body_14);
@@ -1166,15 +1277,19 @@ ExtruderGroup::ExtruderGroup(wxWindow * parent, int index, wxString const &title
     if (index < 0) {
         label_ams->Hide();
         ams_not_installed_msg->Hide();
-        wxStaticBoxSizer *hsizer     = new wxStaticBoxSizer(this, wxHORIZONTAL);
+        wxStaticBoxSizer *vsizer = new wxStaticBoxSizer(this, wxVERTICAL);
+        wxBoxSizer *hsizer       = new wxBoxSizer(wxHORIZONTAL);
         hsizer->Add(hsizer_diameter, 1, wxEXPAND | wxTOP| wxBOTTOM, FromDIP(8));
         hsizer->Add(hsizer_nozzle, 1, wxEXPAND | wxALL, FromDIP(8));
         hsizer->AddSpacer(FromDIP(2)); // Avoid badge
-        this->sizer = hsizer;
+        vsizer->Add(hover_label, 0, wxLEFT | wxALL, FromDIP(2));
+        vsizer->Add(hsizer, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(2));
+        this->sizer = vsizer;
     } else {
         wxStaticBoxSizer *vsizer = new wxStaticBoxSizer(this, wxVERTICAL);
-        vsizer->Add(hsizer_ams, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(2));
-        vsizer->Add(hsizer_diameter, 0, wxEXPAND | wxLEFT | wxTOP | wxRIGHT | wxBOTTOM, FromDIP(2));
+        vsizer->Add(hover_label, 0, wxLEFT | wxALL, FromDIP(2));
+        vsizer->Add(hsizer_ams, 0, wxEXPAND | wxLEFT | wxTOP | wxRIGHT, FromDIP(2));
+        vsizer->Add(hsizer_diameter, 0, wxEXPAND | wxLEFT | wxTOP | wxRIGHT, FromDIP(2));
         vsizer->Add(hsizer_nozzle, 0, wxEXPAND | wxALL, FromDIP(2));
         this->sizer = vsizer;
     }
@@ -1274,12 +1389,8 @@ void ExtruderGroup::sync_ams(MachineObject const *obj, std::vector<DevAms *> con
 
 void ExtruderGroup::SetTitle(const wxString& title)
 {
-    m_label = title;
-    int tW, tH, descent, externalLeading;
-    GetTextExtent(m_label.IsEmpty() ? "Orca" : m_label, &tW, &tH, &descent, &externalLeading, &m_font);
-    m_label_height = tH - externalLeading;
-    m_label_width  = tW;
-    Refresh();
+    if (hover_label)
+        hover_label->SetTitle(title);
 }
 
 bool Sidebar::priv::switch_diameter(bool single)
@@ -1598,8 +1709,13 @@ std::optional<NozzleOption> Sidebar::priv::get_nozzle_options(MachineObject* obj
                         }
                     }
                 }
-                // Orca: nozzle stats are persisted directly into the preset's `extruder_nozzle_stats` key;
-                // there is no machine/user data-source flag on the stats.
+                // The stats now hold the device's per-type breakdown: protect it from being collapsed by
+                // a manual flow switch, and refresh the sidebar badges.
+                setNozzleStatsFromMachine(true);
+                if (nozzle_volume_type_opt) {
+                    for (int extruder_id = 0; extruder_id < extruder_count && extruder_id < (int) nozzle_volume_type_opt->values.size(); ++extruder_id)
+                        updateNozzleCountDisplay(preset_bundle, extruder_id, NozzleVolumeType(nozzle_volume_type_opt->values[extruder_id]));
+                }
             }
         }
 
@@ -2408,6 +2524,30 @@ Sidebar::Sidebar(Plater *parent)
         p->left_extruder  = new ExtruderGroup(p->m_panel_printer_content, 0, _L("Left Nozzle"));
         p->right_extruder = new ExtruderGroup(p->m_panel_printer_content, 1, _L("Right Nozzle"));
         p->single_extruder = new ExtruderGroup(p->m_panel_printer_content, -1, _L("Nozzle"));
+        // manuallySetNozzleCount refreshes the badge and the plater itself; it is a no-op unless the
+        // printer has a multi-nozzle extruder (and the edit button is only enabled then, see
+        // enable_nozzle_count_edit).
+        p->left_extruder->SetOnHoverClick([]() { GUI::manuallySetNozzleCount(0); });
+        p->right_extruder->SetOnHoverClick([]() { GUI::manuallySetNozzleCount(1); });
+        p->single_extruder->SetEditEnabled(false);
+        // Orca: keep the floating switcher icon aligned with the left extruder's AMS row when the
+        // extruder card is resized (the overlay is absolutely positioned, not managed by a sizer).
+        p->left_extruder->Bind(wxEVT_SIZE, [this](wxSizeEvent &evt) {
+            if (p->extruder_separator_icon && p->extruder_separator_icon->IsShown()) {
+                wxPoint left_box_pos  = p->left_extruder->GetPosition();
+                wxPoint ams_local_pos = p->left_extruder->hsizer_ams->GetPosition();
+                wxSize  left_size     = p->left_extruder->sizer->GetSize();
+                wxSize  ams_size      = p->left_extruder->hsizer_ams->GetSize();
+                wxSize  icon_size     = p->extruder_separator_icon->GetSize();
+                int     ams_abs_y     = left_box_pos.y + ams_local_pos.y + FromDIP(4);
+                int     center_x      = left_size.GetWidth() + FromDIP(6) - icon_size.GetWidth() / 2;
+                int     center_y      = ams_abs_y + (ams_size.GetHeight() - icon_size.GetHeight()) / 2 - icon_size.GetHeight() / 2;
+                p->extruder_separator_icon->SetPosition(wxPoint(center_x, center_y));
+                if (p->m_panel_printer_content)
+                    p->m_panel_printer_content->Refresh();
+            }
+            evt.Skip();
+        });
         auto switch_diameter = [this](wxCommandEvent & evt) {
             auto extruder = dynamic_cast<ExtruderGroup *>(dynamic_cast<ComboBox *>(evt.GetEventObject())->GetParent());
             p->is_switching_diameter = true;
@@ -4219,6 +4359,26 @@ void Sidebar::enable_purge_mode_btn(bool enable)
         p->m_panel_filament_title->Layout();
         this->Layout();
     });
+}
+
+void Sidebar::set_extruder_nozzle_count(int extruder_id, int nozzle_count)
+{
+    if (!p)
+        return;
+    if (extruder_id == 0) {
+        p->left_extruder->SetCount(nozzle_count);
+        p->single_extruder->SetCount(nozzle_count);
+    } else if (extruder_id == 1) {
+        p->right_extruder->SetCount(nozzle_count);
+    }
+}
+
+void Sidebar::enable_nozzle_count_edit(bool enable)
+{
+    if (!p)
+        return;
+    p->left_extruder->SetEditEnabled(enable);
+    p->right_extruder->SetEditEnabled(enable);
 }
 
 void Sidebar::update_dynamic_filament_list()
@@ -7009,6 +7169,13 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                             }
                             // Update filament combobox after loading config
                             wxGetApp().plater()->sidebar().update_presets(Preset::TYPE_FILAMENT);
+                            // The loaded project supplies nozzle_volume_type; refresh the sidebar
+                            // nozzle-count badges against it.
+                            if (auto *nozzle_volumes = wxGetApp().preset_bundle->project_config.option<ConfigOptionEnumsGeneric>("nozzle_volume_type")) {
+                                const int extruder_count = wxGetApp().preset_bundle->get_printer_extruder_count();
+                                for (int extruder_id = 0; extruder_id < extruder_count && extruder_id < (int) nozzle_volumes->values.size(); ++extruder_id)
+                                    updateNozzleCountDisplay(wxGetApp().preset_bundle, extruder_id, NozzleVolumeType(nozzle_volumes->values[extruder_id]));
+                            }
                         }
                     }
                     if (!silence) wxGetApp().app_config->update_config_dir(path.parent_path().string());
