@@ -343,6 +343,13 @@ enum LayerSeq {
     flsCustomize
 };
 
+enum FanDirection {
+    fdUndefine = 0,
+    fdLeft,
+    fdRight,
+    fdBoth
+};
+
 static std::unordered_map<NozzleType, std::string>NozzleTypeEumnToStr = {
     {NozzleType::ntUndefine,        "undefine"},
     {NozzleType::ntHardenedSteel,   "hardened_steel"},
@@ -1483,6 +1490,7 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionEnumsGenericNullable,nozzle_type))
     ((ConfigOptionInt,                 nozzle_hrc))
     ((ConfigOptionBool,                auxiliary_fan))
+    ((ConfigOptionEnum<FanDirection>,  fan_direction))
     ((ConfigOptionBool,                support_air_filtration))
     ((ConfigOptionBool,                cooling_filter_enabled))
     ((ConfigOptionEnum<PrinterStructure>,printer_structure))
