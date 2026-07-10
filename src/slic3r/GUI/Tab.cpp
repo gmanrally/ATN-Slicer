@@ -4934,6 +4934,7 @@ void TabPrinter::build_fff()
         optgroup->append_single_option_line("fan_direction");
         optgroup->append_single_option_line("support_chamber_temp_control", "printer_basic_information_accessory#support-controlling-chamber-temperature");
         optgroup->append_single_option_line("support_air_filtration", "printer_basic_information_accessory#support-air-filtration");
+        optgroup->append_single_option_line("cooling_filter_enabled");
 
         auto edit_custom_gcode_fn = [this](const t_config_option_key& opt_key) { edit_custom_gcode(opt_key); };
 
@@ -5858,6 +5859,10 @@ void TabPrinter::toggle_options()
         toggle_line("parallel_printheads_count", support_parallel_printheads);
 
         toggle_line("fan_direction", m_config->opt_bool("auxiliary_fan"));
+
+        // The cooling filter and air filtration are alternative accessories: show only the one the printer supports.
+        toggle_line("support_air_filtration", !m_config->opt_bool("support_cooling_filter"));
+        toggle_line("cooling_filter_enabled", m_config->opt_bool("support_cooling_filter"));
     }
     
 
