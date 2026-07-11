@@ -269,3 +269,144 @@ TEST_CASE("Print::validate tolerates a null warnings pointer", "[Print][validate
     StringObjectException err = print.validate();  // warnings == nullptr
     CHECK(err.string.empty());
 }
+
+TEST_CASE("A default slice emits perimeter, infill, and skirt", "[Print]")
+{
+    const std::string gcode = slice({ cube(20) }, {
+        { "layer_height",               0.2 },
+        { "initial_layer_print_height", 0.2 },
+        { "z_hop",                      0 } // keep recorded Z at the printed height
+    });
+    CHECK(role_passes(gcode, "perimeter") > 0);
+    CHECK(role_passes(gcode, "infill")    > 0);
+    CHECK(role_passes(gcode, "skirt")     > 0);
+    CHECK_THAT(max_z(gcode), Catch::Matchers::WithinAbs(20.0, 1e-4));
+}
+
+// The G-code carries a config-comment block describing the resolved settings. The
+// per-region width lines are always present; the support and first-layer lines appear
+// only when those features are configured.
+TEST_CASE("G-code lists the resolved extrusion-width settings", "[Print]")
+{
+    const std::string gcode = slice({ cube(20) }, { { "initial_layer_line_width", 0 } });
+    CHECK(gcode.find("; external perimeters extrusion width") != std::string::npos);
+    CHECK(gcode.find("; perimeters extrusion width")          != std::string::npos);
+    CHECK(gcode.find("; infill extrusion width")              != std::string::npos);
+    CHECK(gcode.find("; solid infill extrusion width")        != std::string::npos);
+    CHECK(gcode.find("; top infill extrusion width")          != std::string::npos);
+    CHECK(gcode.find("; support material extrusion width")    == std::string::npos);
+    CHECK(gcode.find("; first layer extrusion width")         == std::string::npos);
+    CHECK(gcode.find("; layer_height")                        != std::string::npos);
+    CHECK(gcode.find("; sparse_infill_density")               != std::string::npos);
+
+    const std::string with_support = slice({ cube(20) }, {
+        { "initial_layer_line_width", 0 }, { "enable_support", true }, { "raft_layers", 3 },
+    });
+    CHECK(with_support.find("; support material extrusion width") != std::string::npos);
+
+    const std::string with_first_layer = slice({ cube(20) }, { { "initial_layer_line_width", "0.5" } });
+    CHECK(with_first_layer.find("; first layer extrusion width") != std::string::npos);
+}
+
+// Custom G-code templates substitute placeholders during export.
+TEST_CASE("Custom G-code placeholders are substituted", "[Print]")
+{
+    // [current_extruder] in the start G-code.
+    CHECK(slice({ cube(20) }, { { "machine_start_gcode", "; Extruder [current_extruder]" } })
+              .find("; Extruder 0") != std::string::npos);
+
+    // [layer_num] / [layer_z] in the end G-code (a 20mm cube at 0.1mm is 200 layers).
+    const std::string end_gcode = slice({ cube(20) }, {
+        { "machine_end_gcode",          "; Layer_num [layer_num]\n; Layer_z [layer_z]" },
+        { "layer_height",               0.1 },
+        { "initial_layer_print_height", 0.1 },
+    });
+    CHECK(end_gcode.find("; Layer_num 199") != std::string::npos);
+    CHECK(end_gcode.find("; Layer_z 20")    != std::string::npos);
+
+    // printing_by_object_gcode is emitted between sequentially printed objects.
+    CHECK(slice_two_cubes_arranged({
+                    { "print_sequence",           "by object" },
+                    { "printing_by_object_gcode", "; between-object-gcode" },
+                })
+              .find("; between-object-gcode") != std::string::npos);
+
+    // [layer_num] keeps counting across sequentially printed objects (199 then 399).
+    const std::string per_layer = slice_two_cubes_arranged({
+        { "print_sequence",             "by object" },
+        { "layer_change_gcode",         ";Layer:[layer_num] ([layer_z] mm)" },
+        { "layer_height",               0.1 },
+        { "initial_layer_print_height", 0.1 },
+    });
+    CHECK(per_layer.find(";Layer:199 ") != std::string::npos);
+    CHECK(per_layer.find(";Layer:399 ") != std::string::npos);
+}
+
+TEST_CASE("export_gcode writes G-code without a result pointer", "[Print][export_gcode]")
+{
+    Print print;
+    Model model;
+    Slic3r::Test::init_print({cube(20)}, print, model);
+    print.process();
+
+    SECTION("non-BBL printer") {}
+    SECTION("BBL printer") { print.is_BBL_printer() = true; }
+
+    ScopedTemporaryFile temp(".gcode");
+    REQUIRE_NOTHROW(print.export_gcode(temp.string(), nullptr, nullptr));
+
+    std::ifstream in(temp.string());
+    const std::string gcode((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+    REQUIRE_FALSE(gcode.empty());
+}
+
+TEST_CASE("Sequential printing follows model order", "[Print]")
+{
+    // Two objects of different heights, taller one added first. Orca prints
+    // sequential objects in model order, so the taller one is printed first.
+    const std::string gcode = Slic3r::Test::slice({ cube(20), Slic3r::make_cube(20, 20, 10) }, {
+        { "print_sequence",             "by object" },
+        { "layer_height",               0.2 },
+        { "initial_layer_print_height", 0.2 },
+        { "z_hop",                      0 }
+    });
+
+    // The first object's height is the peak Z reached before Z drops back to the
+    // first layer (the object change). With by-object printing only an object
+    // change returns Z to the bottom.
+    double first_object_peak_z = 0.0;
+    double running_peak        = 0.0;
+    GCodeReader reader;
+    reader.parse_buffer(gcode, [&] (GCodeReader& self, const GCodeReader::GCodeLine& line) {
+        if (first_object_peak_z != 0.0 || !line.extruding(self)) return; // ignore travels (e.g. start-gcode Z lift)
+        if (running_peak > 1.0 && self.z() < 1.0)
+            first_object_peak_z = running_peak;
+        else
+            running_peak = std::max(running_peak, static_cast<double>(self.z()));
+    });
+
+    REQUIRE_THAT(first_object_peak_z, Catch::Matchers::WithinAbs(20.0, 0.3));
+}
+
+// A sequential (by-object) print must publish the print-level nozzle group result just
+// like a by-layer print, so custom g-code can index the per-nozzle placeholder tables
+// (e.g. nozzle_diameter_at_nozzle_id[]) instead of failing on an empty vector.
+TEST_CASE("Sequential printing publishes the nozzle group result", "[Print][MultiNozzle]")
+{
+    SECTION("process() publishes the result") {
+        Print print;
+        Model model;
+        place_two_cubes_apart(60.0, { { "print_sequence", "by object" } }, print, model);
+        print.process();
+        REQUIRE(print.get_layered_nozzle_group_result() != nullptr);
+    }
+
+    SECTION("start g-code can index the per-nozzle diameter table") {
+        const std::string gcode = slice_two_cubes_arranged({
+            { "print_sequence",      "by object" },
+            { "machine_start_gcode", "{if nozzle_diameter_at_nozzle_id[0] > 0}; SEQ-ND-OK\n{endif}" },
+        });
+        CHECK(gcode.find("; SEQ-ND-OK") != std::string::npos);
+    }
+}
