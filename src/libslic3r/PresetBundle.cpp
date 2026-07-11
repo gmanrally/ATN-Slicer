@@ -57,7 +57,18 @@ static std::vector<std::string> s_project_options {
     "prime_volume_mode",
     "nozzle_volume_type",
     "filament_map_mode",
-    "filament_map"
+    "filament_map",
+    // Per-filament nozzle-volume choice; project-level like filament_map so the per-filament
+    // slot resolution survives preset switches.
+    "filament_volume_map",
+    // Per-filament physical-nozzle choice the grouping engine writes back; project-level so a
+    // saved project round-trips the assignment alongside filament_map/filament_volume_map.
+    "filament_nozzle_map",
+    // Filament Track Switch device state: whether the switch is installed and ready, and
+    // whether dynamic per-nozzle filament mapping is active. Persisted with the project and
+    // restored from a saved 3mf; reset to false on load and set true only by live device sync.
+    "has_filament_switcher",
+    "enable_filament_dynamic_map"
 };
 
 //Orca: add custom as default
@@ -2665,6 +2676,12 @@ void PresetBundle::update_selections(AppConfig &config)
     std::vector<int> filament_maps(filament_colors.size(), 1);
     project_config.option<ConfigOptionInts>("filament_map")->values = filament_maps;
 
+    std::vector<int> filament_nozzle_maps(filament_colors.size(), 0);
+    project_config.option<ConfigOptionInts>("filament_nozzle_map")->values = filament_nozzle_maps;
+
+    std::vector<int> filament_volume_maps(filament_colors.size(), static_cast<int>(NozzleVolumeType::nvtStandard));
+    project_config.option<ConfigOptionInts>("filament_volume_map")->values = filament_volume_maps;
+
     std::vector<std::string> extruder_ams_count_str;
     if (config.has_printer_setting(initial_printer_profile_name, "extruder_ams_count")) {
         boost::algorithm::split(extruder_ams_count_str, config.get_printer_setting(initial_printer_profile_name, "extruder_ams_count"), boost::algorithm::is_any_of(","));
@@ -2808,6 +2825,12 @@ void PresetBundle::load_selections(AppConfig &config, const PresetPreferences& p
 
     std::vector<int> filament_maps(filament_colors.size(), 1);
     project_config.option<ConfigOptionInts>("filament_map")->values = filament_maps;
+
+    std::vector<int> filament_nozzle_maps(filament_colors.size(), 0);
+    project_config.option<ConfigOptionInts>("filament_nozzle_map")->values = filament_nozzle_maps;
+
+    std::vector<int> filament_volume_maps(filament_colors.size(), static_cast<int>(NozzleVolumeType::nvtStandard));
+    project_config.option<ConfigOptionInts>("filament_volume_map")->values = filament_volume_maps;
 
     std::vector<std::string> extruder_ams_count_str;
     if (config.has_printer_setting(initial_printer_profile_name, "extruder_ams_count")) {
@@ -2985,7 +3008,8 @@ void PresetBundle::set_num_filaments(unsigned int n, std::vector<std::string> ne
     ConfigOptionStrings *filament_multi_color = project_config.option<ConfigOptionStrings>("filament_multi_colour");
     ConfigOptionStrings* filament_color_type = project_config.option<ConfigOptionStrings>("filament_colour_type");
     ConfigOptionInts* filament_map = project_config.option<ConfigOptionInts>("filament_map");
-
+    ConfigOptionInts* filament_nozzle_map = project_config.option<ConfigOptionInts>("filament_nozzle_map");
+    ConfigOptionInts* filament_volume_map = project_config.option<ConfigOptionInts>("filament_volume_map");
 
     filament_color->resize(n);
     // Sync filament multi colour
@@ -2995,6 +3019,8 @@ void PresetBundle::set_num_filaments(unsigned int n, std::vector<std::string> ne
     }
     filament_color_type->resize(n);
     filament_map->values.resize(n, 1);
+    filament_nozzle_map->values.resize(n, 0);
+    filament_volume_map->values.resize(n, static_cast<int>(NozzleVolumeType::nvtStandard));
     ams_multi_color_filment.resize(n);
 
     // BBS set new filament color to new_color
@@ -3022,7 +3048,8 @@ void PresetBundle::set_num_filaments(unsigned int n, std::string new_color)
     ConfigOptionStrings *filament_multi_color = project_config.option<ConfigOptionStrings>("filament_multi_colour");
     ConfigOptionStrings* filament_color_type = project_config.option<ConfigOptionStrings>("filament_colour_type");
     ConfigOptionInts* filament_map = project_config.option<ConfigOptionInts>("filament_map");
-
+    ConfigOptionInts* filament_nozzle_map = project_config.option<ConfigOptionInts>("filament_nozzle_map");
+    ConfigOptionInts* filament_volume_map = project_config.option<ConfigOptionInts>("filament_volume_map");
 
     filament_color->resize(n);
     // Sync filament multi colour
@@ -3032,6 +3059,8 @@ void PresetBundle::set_num_filaments(unsigned int n, std::string new_color)
     }
     filament_color_type->resize(n);
     filament_map->values.resize(n, 1);
+    filament_nozzle_map->values.resize(n, 0);
+    filament_volume_map->values.resize(n, static_cast<int>(NozzleVolumeType::nvtStandard));
     ams_multi_color_filment.resize(n);
 
     //BBS set new filament color to new_color
@@ -3072,15 +3101,25 @@ void PresetBundle::update_num_filaments(unsigned int to_del_flament_id)
     ConfigOptionStrings *filament_multi_color = project_config.option<ConfigOptionStrings>("filament_multi_colour");
     ConfigOptionStrings *filament_color_type  = project_config.option<ConfigOptionStrings>("filament_colour_type");
     ConfigOptionInts* filament_map = project_config.option<ConfigOptionInts>("filament_map");
+    ConfigOptionInts* filament_nozzle_map = project_config.option<ConfigOptionInts>("filament_nozzle_map");
+    ConfigOptionInts* filament_volume_map = project_config.option<ConfigOptionInts>("filament_volume_map");
     if (filament_color->values.size() > to_del_flament_id) {
         filament_color->values.erase(filament_color->values.begin() + to_del_flament_id);
         if (filament_map->values.size() > to_del_flament_id) {
             filament_map->values.erase(filament_map->values.begin() + to_del_flament_id);
         }
+        if (filament_nozzle_map->values.size() > to_del_flament_id) {
+            filament_nozzle_map->values.erase(filament_nozzle_map->values.begin() + to_del_flament_id);
+        }
+        if (filament_volume_map->values.size() > to_del_flament_id) {
+            filament_volume_map->values.erase(filament_volume_map->values.begin() + to_del_flament_id);
+        }
     }
     else {
         filament_color->values.resize(to_del_flament_id);
         filament_map->values.resize(to_del_flament_id, 1);
+        filament_nozzle_map->values.resize(to_del_flament_id, 0);
+        filament_volume_map->values.resize(to_del_flament_id, static_cast<int>(NozzleVolumeType::nvtStandard));
     }
 
     // lambda function to erase or resize the container
