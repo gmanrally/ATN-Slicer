@@ -1687,6 +1687,17 @@ void PrintConfigDef::init_fff_params()
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionFloat(0.));
 
+    def = this->add("brim_supports", coBool);
+    def->label = L("Brim supports too");
+    def->category = L("Support");
+    def->tooltip = L("Also generate a brim around the supports, not just the object. Normally a support's "
+                     "first-layer footprint blocks the object brim where it hugs the part edge, so that edge "
+                     "can lift. With this on, the object brim and a matching support brim sit side by side and "
+                     "form one continuous anchor around the whole part-plus-support footprint. Uses the same "
+                     "Brim width / Brim-object gap and the outer/inner sides set by Brim type.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("brim_type", coEnum);
     def->label = L("Brim type");
     def->category = L("Support");
