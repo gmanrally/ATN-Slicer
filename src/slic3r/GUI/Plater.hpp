@@ -505,6 +505,9 @@ public:
     bool has_toolpaths_to_export() const;
     void export_toolpaths_to_obj() const;
     void reslice();
+    // ATN: notify the docked assistant panel that a job was dispatched to the farm
+    // (Send to Farm) so its learning diary records the print.
+    void notify_atn_sent_to_farm();
     // ATN: re-process the current plate's (externally modified) gcode file into
     // the preview without re-slicing, so an optimized gcode becomes what prints.
     bool apply_optimized_gcode();

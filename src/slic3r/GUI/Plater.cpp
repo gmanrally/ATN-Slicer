@@ -14554,6 +14554,7 @@ const Worker &Plater::get_ui_job_worker() const { return p->m_worker; }
 void Plater::update_ui_from_settings() { p->update_ui_from_settings(); }
 
 void Plater::select_view(const std::string& direction) { p->select_view(direction); }
+void Plater::notify_atn_sent_to_farm() { if (p->atn_panel) p->atn_panel->on_sent_to_farm(); }
 
 //BBS: add no_slice logic
 void Plater::select_view_3D(const std::string& name, bool no_slice) { p->select_view_3D(name, no_slice); }

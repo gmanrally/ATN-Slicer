@@ -26,6 +26,8 @@ public:
     void set_mode(const std::string& mode);
     // Fired when a slice finishes successfully: the page auto-runs pre-flight.
     void on_slice_complete();
+    // Fired when a job is dispatched to the farm: the page records it in the learning diary.
+    void on_sent_to_farm();
 
 private:
     void on_script_message(wxWebViewEvent& evt);

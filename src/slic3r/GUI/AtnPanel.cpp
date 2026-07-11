@@ -126,6 +126,15 @@ void AtnPanel::on_slice_complete()
     send_to_page(msg.dump());
 }
 
+void AtnPanel::on_sent_to_farm()
+{
+    // ATN: a job was dispatched to the farm -> tell the page so the learning diary records it
+    // (only prints and farm-sent jobs are stored, not every slice).
+    json msg;
+    msg["command"] = "atn_sent_to_farm";
+    send_to_page(msg.dump());
+}
+
 void AtnPanel::send_to_page(const std::string& json_payload)
 {
     if (m_browser != nullptr)
