@@ -10,6 +10,16 @@
 
 using namespace Slic3r;
 
+// Arrange on a finite bed, not an unbounded InfiniteBed: the latter places items
+// near INT64_MIN/4 (~2.3e18), which reaches ClipperLib's coordinate limit and throws
+// "Coordinate outside allowed range" on Windows/arm64. A 500x500 bed keeps coordinates
+// small while still covering large printers.
+static void arrange_objects_on_test_bed(Model &model, const DynamicPrintConfig &config)
+{
+    const BoundingBox bed{Point::new_scale(0., 0.), Point::new_scale(500., 500.)};
+    arrange_objects(model, bed, ArrangeParams{scaled(min_object_distance(config))});
+}
+
 SCENARIO("set_speed emits values with fixed-point output.", "[GCodeWriter]") {
 
     GIVEN("GCodeWriter instance") {
@@ -238,8 +248,7 @@ TEST_CASE("Machine envelope emits max limit among used extruders", "[GCodeWriter
         obj2->config.set_key_value("extruder", new ConfigOptionInt(2)); // 0-based index 1
 
         Print print;
-        arrange_objects(model, InfiniteBed{},
-                        ArrangeParams{scaled(min_object_distance(config))});
+        arrange_objects_on_test_bed(model, config);
         for (auto* mo : model.objects) {
             mo->ensure_on_bed();
             print.auto_assign_extruders(mo);
@@ -351,7 +360,7 @@ TEST_CASE("EXTRUDER_LIMIT per-extruder clamping and max fallback", "[GCodeWriter
     obj2->config.set_key_value("extruder", new ConfigOptionInt(2)); // 0-based index 1
 
     Print print;
-    arrange_objects(model, InfiniteBed{}, ArrangeParams{scaled(min_object_distance(config))});
+    arrange_objects_on_test_bed(model, config);
     for (auto* mo : model.objects) {
         mo->ensure_on_bed();
         print.auto_assign_extruders(mo);
@@ -576,7 +585,7 @@ SCENARIO("Change blocks carry consecutive toolchange ordinals without a duplicat
         auto slice_to_gcode = [&]() {
             Print print;
             print.is_BBL_printer() = true;
-            arrange_objects(model, InfiniteBed{}, ArrangeParams{scaled(min_object_distance(config))});
+            arrange_objects_on_test_bed(model, config);
             for (auto *mo : model.objects) {
                 mo->ensure_on_bed();
                 print.auto_assign_extruders(mo);
@@ -637,7 +646,7 @@ SCENARIO("Prime-tower visits without a filament change do not advance the toolch
 
         Print print;
         print.is_BBL_printer() = true;
-        arrange_objects(model, InfiniteBed{}, ArrangeParams{scaled(min_object_distance(config))});
+        arrange_objects_on_test_bed(model, config);
         for (auto *mo : model.objects) {
             mo->ensure_on_bed();
             print.auto_assign_extruders(mo);
