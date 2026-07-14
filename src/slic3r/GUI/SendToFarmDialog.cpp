@@ -171,16 +171,16 @@ void SendToFarmDialog::fetch_next_part_number()
     auto http = Http::get(farm_url() + "/api/slicer/next-part-number?kind=custom");
     add_token(http, farm_token());
     http.timeout_connect(3).timeout_max(6)
-        .on_error([this](std::string, std::string, unsigned status) {
+        .on_error([this, alive = m_alive](std::string, std::string, unsigned status) {
             if (status != 401) return;
-            wxGetApp().CallAfter([this, alive = m_alive]() { if (*alive) handle_unauthorized(); });
+            wxGetApp().CallAfter([this, alive]() { if (*alive) handle_unauthorized(); });
         })
-        .on_complete([this](std::string body, unsigned status) {
+        .on_complete([this, alive = m_alive](std::string body, unsigned status) {
             if (status != 200) return;
             std::string pn;
             try { pn = json::parse(body).value("part_number", std::string()); } catch (...) { return; }
             if (pn.empty()) return;
-            wxGetApp().CallAfter([this, alive = m_alive, pn]() {
+            wxGetApp().CallAfter([this, alive, pn]() {
                 if (!*alive) return;
                 if (m_part_number->GetValue().Trim().Trim(false).IsEmpty()) {
                     m_part_number->SetValue(wxString::FromUTF8(pn));
@@ -241,7 +241,7 @@ void SendToFarmDialog::fetch_printers()
     auto http = Http::get(farm_url() + "/api/slicer/printers");
     add_token(http, farm_token());
     http.timeout_connect(3).timeout_max(6)
-        .on_complete([this](std::string body, unsigned status) {
+        .on_complete([this, alive = m_alive](std::string body, unsigned status) {
             if (status != 200) return;
             struct P { int id; std::string name, kind; };
             std::vector<P> printers;
@@ -251,7 +251,7 @@ void SendToFarmDialog::fetch_printers()
                     printers.push_back({ p.value("id", 0), p.value("name", std::string("printer")),
                                          p.value("kind", std::string()) });
             } catch (...) { return; }
-            wxGetApp().CallAfter([this, alive = m_alive, printers]() {
+            wxGetApp().CallAfter([this, alive, printers]() {
                 if (!*alive) return;
                 // Filter to the slice's machine only when BOTH sides expose a kind — the farm
                 // returns per-printer kinds AND we detected the plate's kind. Older farms that
@@ -283,8 +283,8 @@ void SendToFarmDialog::fetch_printers()
                 }
             });
         })
-        .on_error([this](std::string, std::string error, unsigned status) {
-            wxGetApp().CallAfter([this, alive = m_alive, error, status]() {
+        .on_error([this, alive = m_alive](std::string, std::string error, unsigned status) {
+            wxGetApp().CallAfter([this, alive, error, status]() {
                 if (!*alive) return;
                 if (status == 401) { handle_unauthorized(); return; }
                 m_status->SetForegroundColour(wxColour(180, 60, 50));
@@ -302,13 +302,13 @@ void SendToFarmDialog::lookup_part()
     auto http = Http::get(farm_url() + "/api/slicer/part-lookup?part_number=" + pn);
     add_token(http, farm_token());
     http.timeout_connect(3).timeout_max(6)
-        .on_complete([this](std::string body, unsigned status) {
+        .on_complete([this, alive = m_alive](std::string body, unsigned status) {
             if (status != 200) return;
             bool exists = false; std::string name, next_rev = "A";
             try { json j = json::parse(body); exists = j.value("exists", false);
                   name = j.value("name", std::string()); next_rev = j.value("next_rev_label", std::string("A")); }
             catch (...) { return; }
-            wxGetApp().CallAfter([this, alive = m_alive, exists, name, next_rev]() {
+            wxGetApp().CallAfter([this, alive, exists, name, next_rev]() {
                 if (!*alive) return;
                 // Show the next revision the farm will assign, but keep the field on "auto"
                 // so the farm always allocates the next free label at send time.
@@ -318,9 +318,9 @@ void SendToFarmDialog::lookup_part()
                 Layout();
             });
         })
-        .on_error([this](std::string, std::string, unsigned status) {
+        .on_error([this, alive = m_alive](std::string, std::string, unsigned status) {
             if (status != 401) return;
-            wxGetApp().CallAfter([this, alive = m_alive]() { if (*alive) handle_unauthorized(); });
+            wxGetApp().CallAfter([this, alive]() { if (*alive) handle_unauthorized(); });
         })
         .perform();
 }
@@ -411,11 +411,11 @@ void SendToFarmDialog::do_sign_in()
 
     auto http = Http::post(farm_url() + "/api/slicer/auth/start");
     http.timeout_connect(4).timeout_max(10)
-        .on_complete([this](std::string body, unsigned) {
+        .on_complete([this, alive = m_alive](std::string body, unsigned) {
             std::string state, url;
             try { json j = json::parse(body); state = j.value("state", std::string());
                   url = j.value("authorize_url", std::string()); } catch (...) {}
-            wxGetApp().CallAfter([this, alive = m_alive, state, url]() {
+            wxGetApp().CallAfter([this, alive, state, url]() {
                 if (!*alive) return;
                 if (state.empty() || url.empty()) {
                     m_auth_btn->SetLabel(_L("Sign in"));
@@ -430,8 +430,8 @@ void SendToFarmDialog::do_sign_in()
                 Layout();
             });
         })
-        .on_error([this](std::string, std::string, unsigned) {
-            wxGetApp().CallAfter([this, alive = m_alive]() {
+        .on_error([this, alive = m_alive](std::string, std::string, unsigned) {
+            wxGetApp().CallAfter([this, alive]() {
                 if (!*alive) return;
                 m_auth_polling = false;
                 m_auth_btn->SetLabel(_L("Sign in"));
@@ -464,12 +464,12 @@ void SendToFarmDialog::poll_auth()
     auto http = Http::post(farm_url() + "/api/slicer/auth/poll");
     http.header("Content-Type", "application/json").set_post_body(b.dump());
     http.timeout_connect(4).timeout_max(8)
-        .on_complete([this](std::string body, unsigned) {
+        .on_complete([this, alive = m_alive](std::string body, unsigned) {
             std::string st, token, account;
             try { json j = json::parse(body); st = j.value("status", std::string());
                   token = j.value("token", std::string()); account = j.value("account", std::string()); }
             catch (...) { return; }
-            wxGetApp().CallAfter([this, alive = m_alive, st, token, account]() {
+            wxGetApp().CallAfter([this, alive, st, token, account]() {
                 if (!*alive || !m_auth_polling) return;
                 if (st == "ok") {
                     if (auto* ac = wxGetApp().app_config) {
@@ -569,7 +569,7 @@ void SendToFarmDialog::do_send()
     http.form_add_file("gcode_file", printable_path, gcode_name);
     if (have_3mf) http.form_add_file("model_file", tmp_3mf, model_name);
 
-    http.on_complete([this](std::string body, unsigned status) {
+    http.on_complete([this, alive = m_alive](std::string body, unsigned status) {
             std::string msg = "Sent to the farm.";
             std::string assigned_pn;
             try {
@@ -577,7 +577,7 @@ void SendToFarmDialog::do_send()
                 if (j.contains("message")) msg = j["message"].get<std::string>();
                 assigned_pn = j.value("part_number", std::string());
             } catch (...) {}
-            wxGetApp().CallAfter([this, alive = m_alive, msg, assigned_pn]() {
+            wxGetApp().CallAfter([this, alive, msg, assigned_pn]() {
               if (!*alive) return;
               try {
                 // The farm is authoritative for the part number (e.g. if it was auto).
@@ -600,10 +600,10 @@ void SendToFarmDialog::do_send()
               }
             });
         })
-        .on_error([this](std::string body, std::string error, unsigned status) {
+        .on_error([this, alive = m_alive](std::string body, std::string error, unsigned status) {
             std::string msg = error.empty() ? "send failed" : error;
             try { json j = json::parse(body); if (j.contains("detail")) msg = j["detail"].is_string() ? j["detail"].get<std::string>() : j["detail"].dump(); } catch (...) {}
-            wxGetApp().CallAfter([this, alive = m_alive, msg, status]() {
+            wxGetApp().CallAfter([this, alive, msg, status]() {
                 if (!*alive) return;
                 m_send->Enable();
                 if (status == 401) { handle_unauthorized(); return; }
