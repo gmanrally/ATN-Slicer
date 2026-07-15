@@ -430,6 +430,9 @@ static ExPolygons outer_inner_brim_area(const Print& print,
     ExPolygons brim_area;
     ExPolygons no_brim_area;
     Polygons   holes;
+    // ATN (merge part & support brims): per-object translated support footprints, so the object
+    // brim can be pulled a one-line break back from the supports at the final clip below.
+    std::map<ObjectID, ExPolygons> supportFootprints;
 
     struct brimWritten {
         bool obj;
@@ -456,9 +459,10 @@ static ExPolygons outer_inner_brim_area(const Print& print,
             const bool         use_brim_ears = object->config().brim_type == btPainted;
             const bool         has_inner_brim = brim_type == btInnerOnly || brim_type == btOuterAndInner || use_auto_brim_ears || use_brim_ears;
             const bool         has_outer_brim = brim_type == btOuterOnly || brim_type == btOuterAndInner || brim_type == btAutoBrim || use_auto_brim_ears || use_brim_ears;
-            // ATN: when on, supports also get a brim so the object brim + support brim form one
-            // continuous anchor (a support footprint otherwise masks out the object brim at that edge).
-            const bool         brim_supports = object->config().brim_supports.value && brim_type != btNoBrim;
+            // ATN (merge part & support brims): when on, the object brim and a support brim share the
+            // gap between part and support — the object brim grows in from the part, a support brim grows
+            // in from the support, and they meet with a one-line break so both anchor but stay separable.
+            const bool         merge_supports = object->config().brim_merge_supports.value && brim_type != btNoBrim;
             coord_t            ear_detection_length = scale_(object->config().brim_ears_detection_length.value);
             coordf_t           brim_ears_max_angle = object->config().brim_ears_max_angle.value;
             //ORCA: Select brim base slices from EFC-compensated outline when enabled.
@@ -594,9 +598,9 @@ static ExPolygons outer_inner_brim_area(const Print& print,
             if (support_material_extruder == extruderNo && brimToWrite.at(object->id()).sup) {
                 if (!object->support_layers().empty() && object->support_layers().front()->support_type==stInnerNormal) {
                     for (const Polygon& support_contour : object->support_layers().front()->support_fills.polygons_covered_by_spacing()) {
-                        // ATN opt-in (brim_supports): a brim ring around each support footprint so it
+                        // ATN (merge part & support brims): a brim ring around each support footprint so it
                         // anchors alongside the object brim -> one continuous outer brim. Off by default.
-                        if (brim_supports && has_outer_brim)
+                        if (merge_supports && has_outer_brim)
                             append(brim_area_support, diff_ex(offset_ex(support_contour, brim_width + brim_offset, jtRound, SCALED_RESOLUTION), offset_ex(support_contour, brim_offset)));
                         no_brim_area_support.emplace_back(support_contour);
                     }
@@ -608,10 +612,10 @@ static ExPolygons outer_inner_brim_area(const Print& print,
                         float brim_width_mod = ex_poly.area() / ex_poly.contour.length() < scaled_half_min_adh_length
                             && brim_width < scaled_flow_width ? brim_width + scaled_additional_brim_width : brim_width;
                         brim_width_mod = floor(brim_width_mod / scaled_flow_width / 2) * scaled_flow_width * 2;
-                        // ATN opt-in (brim_supports): brim ring around the tree-support footprint.
-                        if (brim_supports && has_outer_brim)
+                        // ATN (merge part & support brims): brim ring around the tree-support footprint.
+                        if (merge_supports && has_outer_brim)
                             append(brim_area_support, diff_ex(offset_ex(ex_poly.contour, brim_width_mod + brim_offset, jtRound, SCALED_RESOLUTION), offset_ex(ex_poly.contour, brim_offset)));
-                        if (brim_supports && has_inner_brim)
+                        if (merge_supports && has_inner_brim)
                             append(brim_area_support, diff_ex(offset_ex(ex_poly.holes, -brim_offset), offset_ex(ex_poly.holes, -brim_width - brim_offset)));
                         if (!has_outer_brim)
                             append(no_brim_area_support, diff_ex(offset(ex_poly.contour, no_brim_offset), ex_poly.holes));
@@ -628,6 +632,7 @@ static ExPolygons outer_inner_brim_area(const Print& print,
                     if (!brim_area_support.empty())
                         append_and_translate(brim_area, brim_area_support, instance, print, supportBrimAreaMap);
                     append_and_translate(no_brim_area, no_brim_area_support, instance);
+                    append_and_translate(supportFootprints[object->id()], no_brim_area_support, instance);  // ATN: for the merge break
                     append_and_translate(holes, holes_support, instance);
                 }
                 if (supportBrimAreaMap.find(object->id()) != supportBrimAreaMap.end())
@@ -671,12 +676,26 @@ static ExPolygons outer_inner_brim_area(const Print& print,
 
         }
 
+        const bool  merge_supports_obj = object->config().brim_merge_supports.value;
+        const float merge_break        = print.brim_flow().scaled_spacing();   // one line width
+
         if (brimAreaMap.find(object->id()) != brimAreaMap.end()) {
             brimAreaMap[object->id()] = diff_ex(brimAreaMap[object->id()], extruder_no_brim_area);
+            // ATN (merge part & support brims): pull the object brim one line back from the supports so
+            // it fills the gap from the part side but doesn't fuse to them (supports still peel cleanly).
+            if (merge_supports_obj && supportFootprints.count(object->id()) && !supportFootprints[object->id()].empty())
+                brimAreaMap[object->id()] = diff_ex(brimAreaMap[object->id()],
+                    offset_ex(supportFootprints[object->id()], merge_break, jtRound, SCALED_RESOLUTION));
         }
 
-        if (supportBrimAreaMap.find(object->id()) != supportBrimAreaMap.end())
+        if (supportBrimAreaMap.find(object->id()) != supportBrimAreaMap.end()) {
             supportBrimAreaMap[object->id()] = diff_ex(supportBrimAreaMap[object->id()], extruder_no_brim_area);
+            // ATN (merge part & support brims): keep the support brim one line clear of the (already
+            // broken-back) object brim, so the two meet in the gap without fusing.
+            if (merge_supports_obj && brimAreaMap.count(object->id()) && !brimAreaMap[object->id()].empty())
+                supportBrimAreaMap[object->id()] = diff_ex(supportBrimAreaMap[object->id()],
+                    offset_ex(brimAreaMap[object->id()], merge_break, jtRound, SCALED_RESOLUTION));
+        }
     }
 
     brim_area.clear();
@@ -708,9 +727,9 @@ static ExPolygons outer_inner_brim_area(const Print& print,
             }
             expolygons_append(brim_area, brimAreaMap[object->id()]);
         }
-        // ATN (brim_supports): emit the support brim too. It's already clipped by no_brim above and
+        // ATN (merge part & support brims): emit the support brim too. It's already clipped by no_brim above and
         // is attached to real support first-layer geometry, so it doesn't need the object-island
-        // contact test the object brim uses. Empty unless brim_supports is on -> stock behaviour intact.
+        // contact test the object brim uses. Empty unless merge is on -> stock behaviour intact.
         if (supportBrimAreaMap.find(object->id()) != supportBrimAreaMap.end())
             expolygons_append(brim_area, supportBrimAreaMap[object->id()]);
     }

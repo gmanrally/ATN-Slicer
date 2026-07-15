@@ -1687,14 +1687,17 @@ void PrintConfigDef::init_fff_params()
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionFloat(0.));
 
-    def = this->add("brim_supports", coBool);
-    def->label = L("Brim supports too");
+    def = this->add("brim_merge_supports", coBool);
+    def->label = L("Merge part & support brims");
     def->category = L("Support");
-    def->tooltip = L("Also generate a brim around the supports, not just the object. Normally a support's "
-                     "first-layer footprint blocks the object brim where it hugs the part edge, so that edge "
-                     "can lift. With this on, the object brim and a matching support brim sit side by side and "
-                     "form one continuous anchor around the whole part-plus-support footprint. Uses the same "
-                     "Brim width / Brim-object gap and the outer/inner sides set by Brim type.");
+    def->tooltip = L("Share the gap between a part and its supports between both brims. Normally a support's "
+                     "first-layer footprint masks out the object brim where it hugs the part edge, so that edge "
+                     "gets no brim and can lift (the usual fix is to raise Support/object XY distance to at least "
+                     "the Brim width). With this on, the object brim grows into the gap from the part side and a "
+                     "support brim grows in from the support side; they meet with a hairline break (the Brim-object "
+                     "gap) so the gap is anchored from both sides yet the supports still peel off cleanly. Lets you "
+                     "brim tight to the supports without a large XY distance. Uses the Brim width / Brim-object gap "
+                     "and the outer/inner sides set by Brim type.");
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(false));
 
