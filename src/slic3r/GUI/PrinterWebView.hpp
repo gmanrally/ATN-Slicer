@@ -29,9 +29,11 @@
 
 
 namespace Slic3r {
+class DynamicPrintConfig;
 namespace GUI {
 
 class PrinterWebViewHandler;
+class FlashforgeStatusPanel;
 
 
 class PrinterWebView : public wxPanel {
@@ -40,6 +42,12 @@ public:
     virtual ~PrinterWebView();
 
     void load_url(wxString& url, wxString apikey = "");
+
+    // Flashforge printers do not serve a web page at http://<ip>, so the embedded browser is dead
+    // for them. These swap a native LAN status panel into the same tab slot instead. Show is gated to
+    // the Flashforge host type by the caller; Hide restores normal browser behaviour on printer change.
+    void ShowFlashforgeStatus(const DynamicPrintConfig& config);
+    void HideFlashforgeStatus();
     void UpdateState();
     void OnClose(wxCloseEvent& evt);
     void OnError(wxWebViewEvent& evt);
@@ -62,6 +70,7 @@ private:
     bool m_apikey_sent;
     wxString m_url_deferred;
     std::unique_ptr<PrinterWebViewHandler> m_handler;
+    FlashforgeStatusPanel* m_ff_status {nullptr};   // lazily created; nullptr until a FF printer is shown
 
     // DECLARE_EVENT_TABLE()
 };

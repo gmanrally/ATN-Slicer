@@ -4289,6 +4289,18 @@ void MainFrame::load_printer_url()
     wxString url = from_u8(PrintHost::get_print_host_webui(&cfg));
     wxString apikey;
     const auto host_type = cfg.option<ConfigOptionEnum<PrintHostType>>("host_type")->value;
+
+    // Flashforge printers serve no web page at http://<ip>, so the embedded browser is a dead
+    // ERR_CONNECTION_REFUSED. Show a native LAN status panel (port-8898 detail API) in the same tab
+    // instead. Every other host keeps the browser -- HideFlashforgeStatus() restores it on change.
+    if (host_type == htFlashforge) {
+        if (m_printer_view != nullptr)
+            m_printer_view->ShowFlashforgeStatus(cfg);
+        return;
+    }
+    if (m_printer_view != nullptr)
+        m_printer_view->HideFlashforgeStatus();
+
     if (cfg.has("printhost_apikey") && (host_type == htPrusaLink || host_type == htPrusaConnect))
         apikey = cfg.opt_string("printhost_apikey");
     if (!url.empty()) {

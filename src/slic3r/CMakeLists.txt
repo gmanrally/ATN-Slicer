@@ -393,6 +393,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/PrinterCloudAuthDialog.hpp
     GUI/Printer/PrinterFileSystem.cpp
     GUI/Printer/PrinterFileSystem.h
+    GUI/FlashforgeStatusPanel.cpp
+    GUI/FlashforgeStatusPanel.hpp
     GUI/PrinterWebView.cpp
     GUI/PrinterWebViewHandler.cpp
     GUI/PrinterWebViewHandler.hpp

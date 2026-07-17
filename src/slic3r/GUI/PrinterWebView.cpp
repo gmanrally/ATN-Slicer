@@ -1,6 +1,7 @@
 #include "PrinterWebView.hpp"
 
 #include "I18N.hpp"
+#include "FlashforgeStatusPanel.hpp"
 #include "PrinterWebViewHandler.hpp"
 #include "slic3r/GUI/PrinterWebView.hpp"
 #include "slic3r/GUI/wxExtensions.hpp"
@@ -192,12 +193,39 @@ void PrinterWebView::load_url(wxString& url, wxString apikey)
 
 bool PrinterWebView::Show(bool show)
 {
-    if (show && !m_url_deferred.empty()) {
+    if (show && !m_url_deferred.empty() && (m_ff_status == nullptr || !m_ff_status->IsShown())) {
         m_browser->LoadURL(m_url_deferred);
         //ORCA: m_url_deferred will be cleared on load success
         //m_url_deferred.clear();
     }
     return wxPanel::Show(show);
+}
+
+void PrinterWebView::ShowFlashforgeStatus(const DynamicPrintConfig& config)
+{
+    if (m_ff_status == nullptr) {
+        m_ff_status = new FlashforgeStatusPanel(this);
+        // Same slot as the browser in the panel's vertical sizer.
+        GetSizer()->Add(m_ff_status, wxSizerFlags().Expand().Proportion(1));
+    }
+    // Swap the dead browser out for the native panel. Clearing the deferred URL stops Show() from
+    // reloading it behind the panel.
+    m_url_deferred.clear();
+    if (m_browser)
+        m_browser->Show(false);
+    m_ff_status->Show(true);
+    m_ff_status->set_printer(config);
+    GetSizer()->Layout();
+}
+
+void PrinterWebView::HideFlashforgeStatus()
+{
+    if (m_ff_status == nullptr)
+        return;                          // never shown a FF printer -> nothing to undo
+    m_ff_status->Show(false);
+    if (m_browser)
+        m_browser->Show(true);
+    GetSizer()->Layout();
 }
 
 void PrinterWebView::reload()

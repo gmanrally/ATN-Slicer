@@ -28,6 +28,29 @@ struct FlashforgeDiscoveredPrinter
     std::string ip_address;
 };
 
+// Live status from the printer's LAN "detail" endpoint (port 8898). Populated by fetch_status().
+// This is the data the native Device panel shows in place of the embedded browser, which only ever
+// pointed at http://<ip> (port 80) -- a page the AD5M does not serve. `valid` distinguishes a genuine
+// reading from a default-constructed blank; temperatures/counts are <0 when the printer omitted them.
+struct FlashforgeStatus
+{
+    bool        valid {false};
+    std::string state;                 // raw "status" string (printing / ready / pause / completed / busy ...)
+    std::string file_name;             // printFileName
+    std::string firmware;              // firmwareVersion
+    std::string error_code;            // errorCode ("0" / "" when healthy)
+    std::string camera_url;            // cameraStreamUrl (empty if none)
+    double      progress {-1.0};       // printProgress, 0..1 (-1 = unknown)
+    int         layer {-1};            // printLayer
+    int         total_layers {-1};     // targetPrintLayer
+    double      nozzle_temp {-1.0};    // rightTemp
+    double      nozzle_target {-1.0};  // rightTargetTemp
+    double      bed_temp {-1.0};       // platTemp
+    double      bed_target {-1.0};     // platTargetTemp
+    double      chamber_temp {-1.0};   // chamberTemp
+    double      est_time_s {-1.0};     // estimatedTime (seconds)
+};
+
 class Flashforge : public PrintHost
 {
 public:
@@ -45,6 +68,10 @@ public:
     PrintHostPostUploadActions get_post_upload_actions() const override { return PrintHostPostUploadAction::StartPrint; }
     std::string                get_host() const override { return m_host; }
     bool                       fetch_material_slots(std::vector<FlashforgeMaterialSlot>& slots, bool* supports_material_station, wxString& msg) const;
+    // Poll the LAN detail endpoint into a FlashforgeStatus. Blocking (perform_sync) -- call off the
+    // GUI thread. Returns false + fills msg on any transport/JSON/auth failure; out.valid is the
+    // authoritative success flag for callers that ignore the return.
+    bool                       fetch_status(FlashforgeStatus& out, wxString& msg) const;
     static bool                discover_printers(std::vector<FlashforgeDiscoveredPrinter>& printers, wxString& msg, int timeout_ms = 10000, int idle_timeout_ms = 1500, int max_retries = 3);
 
 private:

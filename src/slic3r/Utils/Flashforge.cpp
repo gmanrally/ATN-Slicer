@@ -149,6 +149,32 @@ bool try_parse_json_int(const json& value, int& out)
     return false;
 }
 
+// Flashforge is inconsistent about numeric encoding -- temps and progress come back as JSON numbers
+// on some firmwares and as numeric strings on others. Parse both, like try_parse_json_int does.
+bool try_parse_json_double(const json& value, double& out)
+{
+    try {
+        if (value.is_number()) {
+            out = value.get<double>();
+            return true;
+        }
+        if (value.is_string()) {
+            std::string text = value.get<std::string>();
+            boost::trim(text);
+            if (text.empty())
+                return false;
+            size_t pos = 0;
+            const double parsed = std::stod(text, &pos);
+            if (pos == text.size()) {
+                out = parsed;
+                return true;
+            }
+        }
+    } catch (...) {
+    }
+    return false;
+}
+
 bool validate_local_api_response(const std::string& response_body, wxString& error_msg)
 {
     const auto parsed = json::parse(response_body, nullptr, false, true);
@@ -551,6 +577,60 @@ bool Flashforge::fetch_material_slots(std::vector<FlashforgeMaterialSlot>& slots
         slots.emplace_back(std::move(info));
     }
 
+    return true;
+}
+
+bool Flashforge::fetch_status(FlashforgeStatus& out, wxString& msg) const
+{
+    out = FlashforgeStatus{};
+
+    if (m_serial_number.empty() || m_check_code.empty()) {
+        msg = _(L("Flashforge local API requires both serial number and access code."));
+        return false;
+    }
+
+    std::string body;
+    if (!request_local_api_json("detail", json{{"serialNumber", m_serial_number}, {"checkCode", m_check_code}}.dump(), body, msg))
+        return false;
+
+    const auto parsed = json::parse(body, nullptr, false, true);
+    if (parsed.is_discarded()) {
+        msg = _(L("Flashforge returned an invalid JSON response."));
+        return false;
+    }
+
+    // Newer firmware nests everything under "detail"; older responses are flat. Accept both, and
+    // tolerate the capitalised variants the material-station code already had to handle.
+    const auto& d = parsed.contains("detail") ? parsed["detail"] :
+                    parsed.contains("Detail") ? parsed["Detail"] : parsed;
+
+    auto str = [&](const char* k) -> std::string {
+        if (d.contains(k) && d[k].is_string()) return d[k].get<std::string>();
+        return {};
+    };
+    auto num = [&](const char* k, double& dst) {
+        if (d.contains(k)) try_parse_json_double(d[k], dst);
+    };
+    auto integer = [&](const char* k, int& dst) {
+        if (d.contains(k)) try_parse_json_int(d[k], dst);
+    };
+
+    out.state       = str("status");
+    out.file_name   = str("printFileName");
+    out.firmware    = str("firmwareVersion");
+    out.error_code  = str("errorCode");
+    out.camera_url  = str("cameraStreamUrl");
+    num("printProgress",   out.progress);
+    integer("printLayer",       out.layer);
+    integer("targetPrintLayer", out.total_layers);
+    num("rightTemp",       out.nozzle_temp);
+    num("rightTargetTemp", out.nozzle_target);
+    num("platTemp",        out.bed_temp);
+    num("platTargetTemp",  out.bed_target);
+    num("chamberTemp",     out.chamber_temp);
+    num("estimatedTime",   out.est_time_s);
+
+    out.valid = true;
     return true;
 }
 
