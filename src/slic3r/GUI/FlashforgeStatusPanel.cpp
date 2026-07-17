@@ -9,6 +9,7 @@
 
 #include "GUI_App.hpp"
 #include "I18N.hpp"
+#include "FlashforgeCameraView.hpp"
 #include "../Utils/Flashforge.hpp"
 
 namespace Slic3r {
@@ -67,6 +68,8 @@ FlashforgeStatusPanel::~FlashforgeStatusPanel()
     // Disarm any in-flight worker: its completion callback checks this before touching the panel.
     *m_alive = false;
     m_timer.Stop();
+    if (m_camera)
+        m_camera->Stop();                // stop the stream thread promptly rather than at child teardown
 }
 
 void FlashforgeStatusPanel::build_ui()
@@ -77,6 +80,13 @@ void FlashforgeStatusPanel::build_ui()
     auto title_font = GetFont();
     title_font.SetPointSize(title_font.GetPointSize() + 3);
     title_font.MakeBold();
+
+    // Live camera view -- hidden until the printer reports a stream URL, then it is the hero of the
+    // tab. Proportion 1 so it grows with the window; the status strip below stays at natural height.
+    m_camera = new FlashforgeCameraView(this);
+    m_camera->SetMinSize(FromDIP(wxSize(-1, 260)));
+    m_camera->Show(false);
+    root->Add(m_camera, 1, wxEXPAND | wxALL, FromDIP(16));
 
     m_state = new wxStaticText(this, wxID_ANY, _L("Connecting…"));
     m_state->SetFont(title_font);
@@ -131,6 +141,8 @@ bool FlashforgeStatusPanel::Show(bool show)
         m_timer.Start(POLL_INTERVAL_MS);
     } else {
         m_timer.Stop();
+        if (m_camera)
+            m_camera->Stop();            // don't pull frames while the tab is hidden
     }
     return ret;
 }
@@ -174,12 +186,26 @@ void FlashforgeStatusPanel::poll_now()
                 self->m_nozzle->SetLabel(_L("Nozzle: --"));
                 self->m_bed->SetLabel(_L("Bed: --"));
                 self->m_chamber->SetLabel(wxEmptyString);
+                if (self->m_camera) { self->m_camera->Stop(); self->m_camera->Show(false); }
                 self->Layout();
                 return;
             }
 
             self->m_state->SetLabel(pretty_state(st.state));
             self->m_conn->SetLabel(_L("Connected over local network"));
+
+            // Show the live view when the printer reports a stream URL; Start() is a no-op if that URL
+            // is already streaming, so this can run every poll without tearing the feed down.
+            if (self->m_camera) {
+                if (!st.camera_url.empty()) {
+                    self->m_camera->Start(from_u8(st.camera_url));
+                    if (!self->m_camera->IsShown()) { self->m_camera->Show(true); self->Layout(); }
+                } else if (self->m_camera->IsShown()) {
+                    self->m_camera->Stop();
+                    self->m_camera->Show(false);
+                    self->Layout();
+                }
+            }
 
             if (st.progress >= 0.0) {
                 self->m_gauge->SetValue(std::min(1000, std::max(0, int(st.progress * 1000))));

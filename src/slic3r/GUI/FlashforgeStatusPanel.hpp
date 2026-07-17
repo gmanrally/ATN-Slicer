@@ -21,6 +21,8 @@ class wxGauge;
 namespace Slic3r {
 namespace GUI {
 
+class FlashforgeCameraView;
+
 class FlashforgeStatusPanel : public wxPanel
 {
 public:
@@ -47,6 +49,8 @@ private:
     // CallAfter) checks it before touching this panel, so a request outliving the panel is harmless.
     std::shared_ptr<std::atomic<bool>> m_alive;
     std::atomic<bool>  m_in_flight {false};
+
+    FlashforgeCameraView* m_camera {nullptr};   // live MJPEG view, shown only when the printer reports a stream URL
 
     wxStaticText* m_conn {nullptr};      // connection / error line
     wxStaticText* m_state {nullptr};     // printer state
