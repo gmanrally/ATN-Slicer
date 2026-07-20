@@ -153,6 +153,28 @@ void FlashforgeStatusPanel::poll_now()
 {
     if (!m_have_printer)
         return;
+
+    // The status/camera API (port 8898) needs the printer's ACCESS CODE (its LAN pairing/check code),
+    // stored in the "API Key / Password" field, on top of the serial number. The serial-only
+    // connection Test (port 8899) works WITHOUT it, so an empty access code is a common first-run
+    // state. Tell the user exactly what to fill in rather than firing a request that can only fail.
+    const std::string code   = m_config.has("printhost_apikey") ? m_config.opt_string("printhost_apikey") : "";
+    const std::string serial = m_config.has("flashforge_serial_number") ? m_config.opt_string("flashforge_serial_number") : "";
+    if (code.empty() || serial.empty()) {
+        m_state->SetLabel(_L("Access code needed"));
+        m_conn->SetLabel(_L("Enter the printer's access code (shown on the printer under LAN mode) in the "
+                            "API Key / Password field of the printer settings, then reopen the Device tab."));
+        m_gauge->SetValue(0);
+        m_progress->SetLabel(wxEmptyString);
+        m_file->SetLabel(wxEmptyString);
+        m_nozzle->SetLabel(_L("Nozzle: --"));
+        m_bed->SetLabel(_L("Bed: --"));
+        m_chamber->SetLabel(wxEmptyString);
+        if (m_camera) { m_camera->Stop(); m_camera->Show(false); }
+        Layout();
+        return;
+    }
+
     bool expected = false;
     if (!m_in_flight.compare_exchange_strong(expected, true))
         return;                          // a request is already running; skip this tick

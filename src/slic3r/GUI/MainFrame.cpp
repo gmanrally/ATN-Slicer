@@ -4272,6 +4272,24 @@ void MainFrame::load_url(wxString url)
 
 void MainFrame::load_printer_url(wxString url, wxString apikey)
 {
+    // Flashforge printers serve no web page at http://<ip>, so the embedded browser is a dead
+    // ERR_CONNECTION_REFUSED. Show a native LAN status panel in the Device tab instead. This is the
+    // COMMON SINK for every Device-tab load -- both the 3D-canvas path (via the no-arg overload) and
+    // the Plater path (Plater.cpp calls this 2-arg overload directly) funnel here -- so the intercept
+    // must live here; putting it only in the no-arg overload missed the Plater path and the browser
+    // still loaded. Non-Flashforge hosts keep the browser; Hide restores it on printer change.
+    if (wxGetApp().preset_bundle != nullptr) {
+        auto cfg = wxGetApp().preset_bundle->printers.get_edited_preset().config;
+        const auto* ht = cfg.option<ConfigOptionEnum<PrintHostType>>("host_type");
+        if (ht != nullptr && ht->value == htFlashforge) {
+            if (m_printer_view != nullptr)
+                m_printer_view->ShowFlashforgeStatus(cfg);
+            return;
+        }
+        if (m_printer_view != nullptr)
+            m_printer_view->HideFlashforgeStatus();
+    }
+
     BOOST_LOG_TRIVIAL(trace) << "load_printer_url:" << url;
     auto evt = new LoadPrinterViewEvent(EVT_LOAD_PRINTER_URL, this->GetId());
     evt->SetString(url);
@@ -4289,20 +4307,10 @@ void MainFrame::load_printer_url()
     wxString url = from_u8(PrintHost::get_print_host_webui(&cfg));
     wxString apikey;
     const auto host_type = cfg.option<ConfigOptionEnum<PrintHostType>>("host_type")->value;
-
-    // Flashforge printers serve no web page at http://<ip>, so the embedded browser is a dead
-    // ERR_CONNECTION_REFUSED. Show a native LAN status panel (port-8898 detail API) in the same tab
-    // instead. Every other host keeps the browser -- HideFlashforgeStatus() restores it on change.
-    if (host_type == htFlashforge) {
-        if (m_printer_view != nullptr)
-            m_printer_view->ShowFlashforgeStatus(cfg);
-        return;
-    }
-    if (m_printer_view != nullptr)
-        m_printer_view->HideFlashforgeStatus();
-
     if (cfg.has("printhost_apikey") && (host_type == htPrusaLink || host_type == htPrusaConnect))
         apikey = cfg.opt_string("printhost_apikey");
+    // Flashforge is intercepted in the 2-arg load_printer_url() below (the common sink) so both this
+    // path and the Plater path get the native status panel -- see the comment there.
     if (!url.empty()) {
         load_printer_url(url, apikey);
     }
