@@ -736,6 +736,9 @@ public:
 
     // URL download - PrusaSlicer gets system call to open prusaslicer:// URL which should contain address of download
     void            start_download(std::string url);
+    // atnslicer://open?... -- download a farm part to a per-part cache, write the .farmctx.json
+    // sidecar, and open it (project or gcode) on THIS PC. Called from start_download for the atn scheme.
+    void            handle_atn_open(const std::string& url);
 
     std::string     get_plugin_url(std::string name, std::string country_code);
     int             download_plugin(std::string name, std::string package_name, InstallProgressFn pro_fn = nullptr, WasCancelledFn cancel_fn = nullptr);

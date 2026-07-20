@@ -255,7 +255,11 @@ inline bool is_orca_open(const std::string& url) { return boost::starts_with(url
 inline bool is_prusaslicer_open(const std::string& url) { return boost::starts_with(url, "prusaslicer://open"); }
 inline bool is_bambustudio_open(const std::string& url) { return boost::starts_with(url, "bambustudio://open") || boost::starts_with(url, "bambustudioopen://"); }
 inline bool is_cura_open(const std::string& url) { return boost::starts_with(url, "cura://open"); }
-inline bool is_supported_open_protocol(const std::string& url) { return is_orca_open(url) || is_prusaslicer_open(url) || is_bambustudio_open(url) || is_cura_open(url); }
+// ATN printer-farm deep link: open a farm part's gcode/3mf on THIS PC and write a .farmctx sidecar so
+// Send-to-Farm saves back to the right part. Deliberately its OWN scheme, not orcaslicer:// -- a
+// co-installed stock OrcaSlicer must not grab the link. See GUI_App::handle_atn_open.
+inline bool is_atn_open(const std::string& url) { return boost::starts_with(url, "atnslicer://open"); }
+inline bool is_supported_open_protocol(const std::string& url) { return is_orca_open(url) || is_prusaslicer_open(url) || is_bambustudio_open(url) || is_cura_open(url) || is_atn_open(url); }
 inline bool is_printables_link(const std::string& url) {
     const std::regex url_regex("(http|https)://printables.com", std::regex_constants::icase);
     return std::regex_match(url, url_regex);

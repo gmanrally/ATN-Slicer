@@ -503,7 +503,10 @@ void OtherInstanceMessageHandler::handle_message(const std::string& message)
 		boost::filesystem::path p = MessageHandlerInternal::get_path(*it);
 		if (! p.string().empty())
 			paths.emplace_back(p);
-		else if (boost::regex_search(*it, results, re) || boost::regex_search(*it, results, re2))
+		// ATN farm deep link (atnslicer://open?url=...) forwarded from a second launch while the
+		// slicer is already running -- route it through the download event to start_download, which
+		// hands it to handle_atn_open. Its ?url= form doesn't match the ?file= project regex above.
+		else if (boost::regex_search(*it, results, re) || boost::regex_search(*it, results, re2) || is_atn_open(*it))
 			downloads.emplace_back(*it);
 	}
 	if (! paths.empty()) {

@@ -2920,6 +2920,7 @@ bool GUI_App::on_init_inner()
             associate_files(L"stp");
         }
         associate_url(L"orcaslicer");
+        associate_url(L"atnslicer");   // ATN farm deep link -- see handle_atn_open
 
         if (app_config->get("associate_gcode") == "true")
             associate_files(L"gcode");
@@ -8088,6 +8089,7 @@ void GUI_App::open_preferences(size_t open_on_tab, const std::string& highlight_
                     associate_files(L"stp");
                 }
                 associate_url(L"orcaslicer");
+                associate_url(L"atnslicer");   // ATN farm deep link
             }
             else {
                 if (app_config->get("associate_gcode") == "true")
@@ -9385,6 +9387,9 @@ void GUI_App::disassociate_url(std::wstring url_prefix)
 
 void GUI_App::start_download(std::string url)
 {
+    // ATN farm deep link -- not a generic model download, so intercept before the download manager.
+    if (is_atn_open(url)) { handle_atn_open(url); return; }
+
     if (!plater_) {
         BOOST_LOG_TRIVIAL(error) << "Could not start URL download: plater is nullptr.";
         return;
@@ -9400,6 +9405,111 @@ void GUI_App::start_download(std::string url)
     m_downloader->init(dest_folder);
     m_downloader->start_download(url);
 
+}
+
+// ATN printer-farm deep link. The browser (on any PC) hands the OS
+//   atnslicer://open?url=<download>&kind=<project|gcode>&part=<PN>&rev=<label>&name=<file>&farm=<base>
+// and we: download the file to a per-part cache on THIS PC, write a "<file>.farmctx.json" sidecar so
+// Send-to-Farm saves back to the right part (SendToFarmDialog::load_opened_context reads it), then
+// open it. The download runs on a worker thread so the UI never freezes; the file is opened back on
+// the GUI thread. Robust on failure: an expired token (401) or network error surfaces a clear message.
+void GUI_App::handle_atn_open(const std::string& url)
+{
+    // The farm builds the link with Python urlencode (quote_plus): spaces are '+', others are %XX.
+    auto url_decode = [](const std::string& in) -> std::string {
+        auto hexval = [](char h) { return (h <= '9') ? (h - '0') : (std::tolower((unsigned char) h) - 'a' + 10); };
+        std::string out; out.reserve(in.size());
+        for (size_t i = 0; i < in.size(); ++i) {
+            char c = in[i];
+            if (c == '+') out += ' ';
+            else if (c == '%' && i + 2 < in.size() && std::isxdigit((unsigned char) in[i + 1]) && std::isxdigit((unsigned char) in[i + 2])) {
+                out += char(hexval(in[i + 1]) * 16 + hexval(in[i + 2])); i += 2;
+            } else out += c;
+        }
+        return out;
+    };
+
+    std::map<std::string, std::string> params;
+    const auto q = url.find('?');
+    if (q != std::string::npos) {
+        std::string query = url.substr(q + 1);
+        size_t start = 0;
+        while (start < query.size()) {
+            size_t amp = query.find('&', start);
+            std::string pair = query.substr(start, amp == std::string::npos ? std::string::npos : amp - start);
+            size_t eq = pair.find('=');
+            if (eq != std::string::npos)
+                params[pair.substr(0, eq)] = url_decode(pair.substr(eq + 1));
+            if (amp == std::string::npos) break;
+            start = amp + 1;
+        }
+    }
+
+    const std::string dl_url = params["url"], kind = params["kind"], part = params["part"],
+                      rev = params["rev"], farm = params["farm"];
+    std::string name = params["name"];
+    if (dl_url.empty()) {
+        show_error(nullptr, _L("This farm open link is missing its download URL. Click Open again in the farm."));
+        return;
+    }
+    if (name.empty()) name = (kind == "gcode") ? "download.gcode" : "download.3mf";
+
+    // Per-part cache under the data dir, mirroring the agent's convention (part_rev folder, name).
+    auto sanitize = [](std::string s) {
+        for (char& c : s) if (std::strchr("<>:\"/\\|?*", c)) c = '_';
+        return s.empty() ? std::string("file") : s;
+    };
+    boost::filesystem::path dir = boost::filesystem::path(Slic3r::data_dir()) / "farm_open" / sanitize(part + "_" + rev);
+    const std::string local = (dir / sanitize(name)).string();
+
+    // Download on a worker thread; open on the GUI thread. Only strings are captured -> no shared state.
+    std::thread([this, dl_url, kind, part, rev, farm, local, dir]() {
+        boost::system::error_code ec;
+        boost::filesystem::create_directories(dir, ec);
+
+        bool ok = false; long http_status = 0; std::string err;
+        Http::get(dl_url)
+            .on_complete([&](std::string body, unsigned status) {
+                http_status = status;
+                try {
+                    boost::nowide::ofstream f(local, std::ios::binary);
+                    f.write(body.data(), (std::streamsize) body.size());
+                    ok = f.good();
+                } catch (...) { ok = false; }
+            })
+            .on_error([&](std::string, std::string error, unsigned status) { http_status = status; err = error; })
+            .perform_sync();
+
+        if (ok && !part.empty()) {
+            // .farmctx.json sidecar next to the file -- part_number + farm_url pre-fill Send-to-Farm so
+            // a save-back becomes the NEXT revision of the right part. Same format the agent writes.
+            auto jesc = [](const std::string& s) { std::string o; for (char c : s) { if (c == '"' || c == '\\') o += '\\'; o += c; } return o; };
+            try {
+                boost::nowide::ofstream sf(local + ".farmctx.json");
+                sf << "{\"part_number\":\"" << jesc(part) << "\",\"rev_label\":\"" << jesc(rev)
+                   << "\",\"farm_url\":\"" << jesc(farm) << "\"}";
+            } catch (...) {}
+        }
+
+        wxGetApp().CallAfter([this, ok, http_status, err, kind, local]() {
+            if (!ok) {
+                wxString msg = (http_status == 401)
+                    ? _L("This farm open link has expired. Click Open again in the farm.")
+                    : _L("Couldn't download the file from the farm.") + (err.empty() ? wxString() : (" " + wxString::FromUTF8(err)));
+                show_error(nullptr, msg);
+                return;
+            }
+            if (mainframe) { mainframe->Show(); mainframe->Raise(); }
+            if (!plater_) return;
+            if (kind == "gcode") {
+                mainframe->select_tab(size_t(MainFrame::tp3DEditor));
+                plater_->select_view_3D("3D");
+                plater_->load_gcode(from_u8(local));
+            } else {
+                plater_->load_project(from_u8(local));
+            }
+        });
+    }).detach();
 }
 
 bool is_soluble_filament(int extruder_id)
