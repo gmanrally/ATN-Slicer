@@ -86,6 +86,14 @@ using namespace nlohmann;
 #include "slic3r/GUI/Camera.hpp"
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/GUI/GuiColor.hpp"
+// ATN: headless Bambu Cloud print (--cloud-print) reuses the network-agent send path.
+#include "slic3r/Utils/NetworkAgent.hpp"
+#include "slic3r/Utils/NetworkAgentFactory.hpp"
+#include "slic3r/Utils/BBLNetworkPlugin.hpp"
+#include "slic3r/Utils/BBLCloudServiceAgent.hpp"
+#include "slic3r/Utils/bambu_networking.hpp"
+#include "slic3r/Utils/ICloudServiceAgent.hpp"
+#include "libslic3r/AppConfig.hpp"
 #include <GLFW/glfw3.h>
 
 #ifdef __WXGTK__
@@ -1184,6 +1192,154 @@ static void load_downward_settings_list_from_config(std::string config_file, std
     }
 }
 
+// ATN: headless Bambu Cloud print. Sends an already-sliced 3MF to a Bambu printer via Bambu's
+// official network plugin -- the same NetworkAgent::start_print path the GUI uses -- so the printer
+// farm can cloud-print without the printer being in Developer/LAN mode. Mirrors GUI_App::on_init_network
+// plus PrintJob's cloud branch, minus wx. Emits exactly one JSON object on stdout; returns 0 on success.
+static int run_cloud_print(const DynamicPrintConfig& cfg, const std::string& input_3mf)
+{
+    auto get_str  = [&](const char* k, const std::string& d) { auto o = cfg.option<ConfigOptionString>(k); return o ? o->value : d; };
+    auto get_bool = [&](const char* k, bool d)               { auto o = cfg.option<ConfigOptionBool>(k);   return o ? o->value : d; };
+    auto get_int  = [&](const char* k, int d)                { auto o = cfg.option<ConfigOptionInt>(k);    return o ? o->value : d; };
+
+    auto emit = [](bool ok, const std::string& stage, const std::string& msg,
+                   const std::string& task_id = "", const std::string& subtask_id = "") -> int {
+        json j; j["ok"] = ok; j["stage"] = stage;
+        if (ok) { if (!task_id.empty()) j["task_id"] = task_id; if (!subtask_id.empty()) j["subtask_id"] = subtask_id; }
+        else j["error"] = msg;
+        boost::nowide::cout << j.dump() << std::endl;
+        return ok ? 0 : 1;
+    };
+
+    const std::string dev_id = get_str("dev_id", "");
+    if (input_3mf.empty() || !boost::filesystem::exists(input_3mf))
+        return emit(false, "start", "sliced 3MF not found: " + input_3mf);
+    if (dev_id.empty())
+        return emit(false, "start", "missing --dev-id");
+
+    // app config (country code / plugin version / cloud providers) from the data dir
+    AppConfig app_config;
+    app_config.load();
+    if (!app_config.get_bool("installed_networking"))
+        return emit(false, "auth", "Bambu network plugin not installed (enable Bambu Cloud once in the GUI)");
+
+    // load the Bambu network plugin
+    const std::string plugin_ver = app_config.get_network_plugin_version();
+    NetworkAgent::initialize_network_module(false, plugin_ver);
+    if (!NetworkAgent::is_network_module_loaded())
+        return emit(false, "auth", "failed to load the Bambu network plugin");
+
+    // build + configure the network agent (mirrors GUI_App::on_init_network, without wx)
+    NetworkAgentFactory::register_all_agents();
+    const std::string data_directory = data_dir();
+    std::unique_ptr<NetworkAgent> agent = create_agent_from_config(data_directory, &app_config);
+    if (!agent)
+        return emit(false, "auth", "failed to create the network agent");
+    agent->set_config_dir(data_directory);
+    agent->init_log();
+    agent->set_cert_file(resources_dir() + "/cert", "slicer_base64.cer");
+    agent->set_country_code(app_config.get_country_code());
+    agent->start();
+
+    // bring up the Bambu DLL agent and restore the persisted cloud session
+    auto& plugin = BBLNetworkPlugin::instance();
+    if (plugin.is_loaded() && !plugin.has_agent())
+        plugin.create_agent(data_directory);
+    if (!plugin.has_agent())
+        return emit(false, "auth", "Bambu plugin agent unavailable");
+    {
+        BBLCloudServiceAgent bbl;
+        bbl.set_config_dir(data_directory);
+        bbl.init_log();
+        bbl.set_cert_file(resources_dir() + "/cert", "slicer_base64.cer");
+        bbl.set_country_code(app_config.get_country_code());
+        bbl.track_enable(false);
+        bbl.start();   // restores the Bambu login token that the GUI persisted in the data dir
+    }
+
+    // ensure a BBL cloud agent is registered in the facade (needed for is_user_login + the printer agent)
+    if (!agent->get_cloud_agent(BBL_CLOUD_PROVIDER)) {
+        auto bbl_cloud = NetworkAgentFactory::create_cloud_agent(BBL_CLOUD_PROVIDER, data_directory);
+        if (bbl_cloud) {
+            bbl_cloud->set_config_dir(data_directory);
+            bbl_cloud->init_log();
+            bbl_cloud->set_cert_file(resources_dir() + "/cert", "slicer_base64.cer");
+            bbl_cloud->set_country_code(app_config.get_country_code());
+            bbl_cloud->start();
+            agent->add_cloud_agent(BBL_CLOUD_PROVIDER, bbl_cloud);
+        }
+    }
+
+    if (!agent->is_user_login(BBL_CLOUD_PROVIDER))
+        return emit(false, "auth", "not logged into Bambu Cloud -- log in once in the ATN Slicer GUI using this --datadir");
+
+    agent->connect_server();
+
+    // select the Bambu printer agent -- NetworkAgent::start_print forwards to m_printer_agent, which is
+    // null by default and would return -1. This is the crux of the headless path.
+    auto bbl_cloud = agent->get_cloud_agent(BBL_CLOUD_PROVIDER);
+    auto printer_agent = NetworkAgentFactory::create_printer_agent_by_id(BBL_PRINTER_AGENT_ID, bbl_cloud, data_directory);
+    if (!printer_agent)
+        return emit(false, "start", "failed to create the Bambu printer agent");
+    agent->set_printer_agent(printer_agent);
+
+    // populate PrintParams for the cloud branch (mirrors PrintJob::process)
+    PrintParams params;
+    params.dev_id                 = dev_id;
+    params.filename               = input_3mf;
+    params.config_filename        = "";
+    params.plate_index            = get_int("plate", 1);
+    params.connection_type        = "cloud";        // must NOT be "lan"
+    params.print_type             = "from_normal";
+    params.task_bed_type          = get_str("bed_type", "");
+    params.task_use_ams           = get_bool("use_ams", false);
+    params.ams_mapping            = get_str("ams_mapping", "");
+    params.ams_mapping2           = get_str("ams_mapping2", "");
+    params.nozzle_mapping         = get_str("nozzle_mapping", "");
+    params.task_bed_leveling      = get_bool("bed_leveling", true);
+    params.task_flow_cali         = get_bool("flow_cali", false);
+    params.task_record_timelapse  = get_bool("timelapse", false);
+    params.task_vibration_cali    = false;
+    params.task_layer_inspect     = false;
+    params.task_ext_change_assist = false;
+    params.try_emmc_print         = false;
+    params.use_ssl_for_ftp        = false;
+    params.use_ssl_for_mqtt       = false;
+    params.username               = "bblp";
+    params.project_name           = boost::filesystem::path(input_3mf).stem().string();
+    params.preset_name            = params.project_name + "_plate_" + std::to_string(params.plate_index);
+
+    // headless callbacks -- plain lambdas, no wx (the GUI versions post wx events; the plugin does not need them)
+    std::string last_info, wait_info;
+    OnUpdateStatusFn update_fn = [&](int stage, int code, std::string info) {
+        if (!info.empty()) last_info = info;
+        boost::nowide::cerr << "[cloud-print] stage=" << stage << " code=" << code
+                            << (info.empty() ? std::string() : (" " + info)) << std::endl;
+    };
+    WasCancelledFn cancel_fn = []() -> bool { return false; };
+    OnWaitFn       wait_fn   = [&](int, std::string info) -> bool { if (!info.empty()) wait_info = info; return true; };
+
+    int result = agent->start_print(params, update_fn, cancel_fn, wait_fn);
+
+    if (result == 0) {
+        std::string task_id, subtask_id;
+        auto grab = [&](const std::string& s) {
+            if (s.empty()) return;
+            try {
+                json ji = json::parse(s);
+                auto as_str = [](const json& v) { return v.is_string() ? v.get<std::string>() : v.dump(); };
+                if (ji.contains("job_id"))     task_id    = as_str(ji["job_id"]);
+                if (ji.contains("task_id"))    task_id    = as_str(ji["task_id"]);
+                if (ji.contains("subtask_id")) subtask_id = as_str(ji["subtask_id"]);
+            } catch (...) {}
+        };
+        grab(wait_info); grab(last_info);
+        return emit(true, "done", "", task_id, subtask_id);
+    }
+    return emit(false, "start", "start_print failed (code " + std::to_string(result) + ")"
+                       + (last_info.empty() ? std::string() : (": " + last_info)));
+}
+
 int CLI::run(int argc, char **argv)
 {
     // Mark the main thread for the debugger and for runtime checks.
@@ -1319,6 +1475,14 @@ int CLI::run(int argc, char **argv)
     BOOST_LOG_TRIVIAL(info) << "finished setup params, argc="<< argc << std::endl;
     std::string temp_path = wxFileName::GetTempDir().utf8_str().data();
     set_temporary_dir(temp_path);
+
+    // ATN: headless Bambu Cloud print. If --cloud-print is set, send the already-sliced 3MF (the
+    // positional input file) via the network agent and exit -- no model load, no slicing.
+    {
+        auto cp = m_config.option<ConfigOptionBool>("cloud_print");
+        if (cp && cp->value)
+            return run_cloud_print(m_config, m_input_files.empty() ? std::string() : m_input_files.front());
+    }
 
     m_extra_config.apply(m_config, true);
     m_extra_config.normalize_fdm();

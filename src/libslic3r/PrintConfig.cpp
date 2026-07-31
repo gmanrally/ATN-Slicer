@@ -10803,6 +10803,15 @@ CLIActionsConfigDef::CLIActionsConfigDef()
     def->cli_params = "filename.3mf";
     def->set_default_value(new ConfigOptionString("output.3mf"));
 
+    // ATN: headless Bambu Cloud print. Sends an already-sliced 3MF (the positional input file)
+    // to a Bambu printer via Bambu's official network plugin -- no re-slicing, no GUI. Used by the
+    // printer farm so Bambu printers no longer need Developer/LAN mode. See run_cloud_print().
+    def = this->add("cloud_print", coBool);
+    def->label = L("Cloud print");
+    def->tooltip = L("Send an already-sliced 3MF to a Bambu printer via Bambu Cloud (headless). "
+                     "Requires a prior Bambu login in the ATN Slicer GUI using the same --datadir.");
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("export_slicedata", coString);
     def->label = L("Export slicing data");
     def->tooltip = L("Export slicing data to a folder.");
@@ -11115,6 +11124,59 @@ CLIMiscConfigDef::CLIMiscConfigDef()
     def = this->add("downward_check", coBool);
     def->label = L("Downward machines check");
     def->tooltip = L("If enabled, check whether current machine downward compatible with the machines in the list.");
+    def->set_default_value(new ConfigOptionBool(false));
+
+    // ATN: parameters for --cloud-print (headless Bambu Cloud send). The 3MF to send is the
+    // positional input file; these describe the target printer and job. AMS/nozzle mappings are
+    // passed through verbatim from the farm (which captured them from the printer) as JSON strings.
+    def = this->add("dev_id", coString);
+    def->label = L("Device ID");
+    def->tooltip = L("Target Bambu printer serial number (--cloud-print).");
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("plate", coInt);
+    def->label = L("Plate index");
+    def->tooltip = L("1-based plate index to print (--cloud-print).");
+    def->set_default_value(new ConfigOptionInt(1));
+
+    def = this->add("bed_type", coString);
+    def->label = L("Bed type");
+    def->tooltip = L("Bed type g-code string, e.g. textured_plate / supertack_plate (--cloud-print).");
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("ams_mapping", coString);
+    def->label = L("AMS mapping");
+    def->tooltip = L("Legacy AMS mapping JSON array (--cloud-print).");
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("ams_mapping2", coString);
+    def->label = L("AMS mapping (per-slot)");
+    def->tooltip = L("Per-filament AMS mapping JSON [{ams_id,slot_id},...] -- required for H2D (--cloud-print).");
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("nozzle_mapping", coString);
+    def->label = L("Nozzle mapping");
+    def->tooltip = L("Filament-slot -> extruder-id JSON int array for multi-nozzle printers (--cloud-print).");
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("use_ams", coBool);
+    def->label = L("Use AMS");
+    def->tooltip = L("Print from AMS rather than the external spool (--cloud-print).");
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("timelapse", coBool);
+    def->label = L("Record timelapse");
+    def->tooltip = L("Record a timelapse for this print (--cloud-print).");
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("bed_leveling", coBool);
+    def->label = L("Bed leveling");
+    def->tooltip = L("Run bed leveling before the print (--cloud-print).");
+    def->set_default_value(new ConfigOptionBool(true));
+
+    def = this->add("flow_cali", coBool);
+    def->label = L("Flow calibration");
+    def->tooltip = L("Run flow-rate calibration before the print (--cloud-print).");
     def->set_default_value(new ConfigOptionBool(false));
 
     def = this->add("downward_settings", coStrings);
