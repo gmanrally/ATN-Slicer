@@ -1,47 +1,34 @@
 # Security Policy
 
-At OrcaSlicer, we are committed to maintaining the security of our ecosystem. Our policy is to ensure that we do not introduce vulnerabilities and that any security issues are addressed promptly and responsibly. We appreciate your help in improving the security of OrcaSlicer and thank you for your responsible disclosure.
-Reporting Security Bugs
+Ask The Nozzle is committed to the security of ATN Slicer and its users. We take security issues seriously and are grateful for responsible disclosure. Thank you for helping keep ATN Slicer safe.
 
-## To report a security bug, please follow these guidelines:
+## Reporting a security issue
 
-  * Email Security Bugs:
-        Send an email to the lead maintainer at softfeverever@gmail.com.
-        Include the word "SECURITY" in the subject line of your email.
+Please report security vulnerabilities **privately, by email** — do not open a public GitHub issue for security problems.
 
-  * Response Times:
-        The lead maintainer will acknowledge receipt of your email within one week (7 days).
-        A detailed response will follow within 48 hours, outlining the next steps for handling your report.
-        After the initial reply, the security team will keep you informed about the progress toward a fix and any announcements.
+- **Email:** [info@askthenozzle.com](mailto:info@askthenozzle.com)
+- **Subject:** include the word **SECURITY** in the subject line.
 
-  * Information and Collaboration:
-        We may request additional information or guidance as we work on addressing the issue.
+### What to include
 
-  * Handling the Report:
-        OrcaSlicer will confirm the problem and determine the affected versions.
-        We will audit the code to find any similar issues and prepare fixes for all releases still under maintenance.
-        Fixes will be released as quickly as possible.
+To help us act quickly, please provide:
 
-  * Third-Party Modules:
-        Report security issues in third-party modules to the respective maintainer of those modules.
+- **Scope** — the component or feature affected.
+- **Impact** — who could be affected, and how.
+- **Reproduction** — detailed, step-by-step instructions to reproduce the issue.
 
-## Security Disclosure Guidelines
+The [OWASP Vulnerability Disclosure Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Vulnerability_Disclosure_Cheat_Sheet.html) is a good reference for a clear, actionable report.
 
-When disclosing a vulnerability, please follow these steps to ensure your report is clear and actionable:
+### What to expect
 
-  * Provide Detailed Information:
-        Scope: Clearly define the scope of the vulnerability.
-        Potential Impact: Let us know who could be affected by this exploit.
-        Reproduction Steps: Document detailed steps to reproduce the vulnerability.
+- We will acknowledge your report within **7 days**.
+- We will follow up with an assessment and the next steps, and keep you informed of progress toward a fix.
+- We will confirm the issue, identify affected versions, audit for related problems, and release fixes as quickly as we reasonably can.
 
-    Reference OWASP Guidelines:
-        Follow the <a href="https://cheatsheetseries.owasp.org/cheatsheets/Vulnerability_Disclosure_Cheat_Sheet.html">OWASP Vulnerability Disclosure Cheat Sheet</a> for best practices in vulnerability disclosure.
+## Third-party components
 
-## Security Recommendations
+ATN Slicer is built on [OrcaSlicer](https://github.com/OrcaSlicer/OrcaSlicer) and other open-source projects, and can load optional third-party plugins (e.g. the Bambu Lab networking plugin). Vulnerabilities in an upstream component are best reported to that project's maintainers as well — but if an issue affects ATN Slicer specifically, please still let us know at **info@askthenozzle.com**.
 
-To enhance security when using OrcaSlicer, we recommend following these steps:
+## Thank you
 
-  * SEE SOMETHING: If you notice anything suspicious or have concerns, please report it.
-  * SAY SOMETHING: If you have any doubts or need assistance, do not hesitate to contact us.
-
-### Thank you for your commitment to the security of OrcaSlicer. Your efforts help us maintain a safe and reliable ecosystem.
+Your responsible disclosure helps us keep ATN Slicer and its users safe. We appreciate it.
