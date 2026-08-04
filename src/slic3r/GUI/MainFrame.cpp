@@ -1,5 +1,6 @@
 #include "MainFrame.hpp"
 
+#include <cstdlib>   // std::getenv (atn_farm_available)
 #include <wx/panel.h>
 #include <wx/notebook.h>
 #include <wx/listbook.h>
@@ -54,9 +55,7 @@
 #include "GUI_App.hpp"
 #include "UnsavedChangesDialog.hpp"
 #include "MsgDialog.hpp"
-#ifdef ATN_FARM_TOOLS
 #include "SendToFarmDialog.hpp"
-#endif
 #include "Notebook.hpp"
 #include "GUI_Factories.hpp"
 #include "GUI_ObjectList.hpp"
@@ -84,6 +83,21 @@
 
 namespace Slic3r {
 namespace GUI {
+
+// ATN: the printer-farm integration ships in every build now, but the "Send to Farm" button only
+// appears once a farm is actually set up on this machine -- so a single public installer serves
+// everyone and the option surfaces automatically when the farm agent / account is configured.
+// Signal is config presence (no network probe): the FARM_URL dev override, a saved farm token
+// (cloud), or a saved farm URL (local agent or custom). The farm agent's onboarding writes
+// app_config("farm","url"/"token"); until then the button stays hidden.
+static bool atn_farm_available()
+{
+    if (const char* env = std::getenv("FARM_URL"); env != nullptr && *env != 0)
+        return true;
+    if (auto* ac = wxGetApp().app_config)
+        return !ac->get("farm", "token").empty() || !ac->get("farm", "url").empty();
+    return false;
+}
 
 wxDEFINE_EVENT(EVT_SELECT_TAB, wxCommandEvent);
 wxDEFINE_EVENT(EVT_HTTP_ERROR, wxCommandEvent);
@@ -1958,10 +1972,8 @@ wxBoxSizer* MainFrame::create_side_tools()
                 wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_SEND_TO_PRINTER));
             else if (m_print_select == eSendToPrinterAll)
                 wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_SEND_TO_PRINTER_ALL));
-#ifdef ATN_FARM_TOOLS
-            else if (m_print_select == eSendToFarm)
+            else if (m_print_select == eSendToFarm)   // only reachable when the farm button is shown (atn_farm_available)
                 SendToFarmDialog(this).ShowModal();
-#endif
             /* else if (m_print_select == ePrintMultiMachine)
                  wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_PRINT_MULTI_MACHINE));*/
         });
@@ -2057,7 +2069,7 @@ wxBoxSizer* MainFrame::create_side_tools()
                 }
 
                 p->append_button(export_gcode_btn);
-#ifdef ATN_FARM_TOOLS
+                if (atn_farm_available()) {
                 // ATN: Send to Farm also belongs here -- the farm's main fleet (K2/Creality and
                 // other 3rd-party hosts) lands in this branch, so the button must show for them too.
                 SideButton* send_to_farm_btn_tp = new SideButton(p, _L("Send to Farm"), "");
@@ -2071,7 +2083,7 @@ wxBoxSizer* MainFrame::create_side_tools()
                     p->Dismiss();
                 });
                 p->append_button(send_to_farm_btn_tp);
-#endif
+                }
             }
             else {
                 //Orca Slicer Buttons
@@ -2206,7 +2218,7 @@ wxBoxSizer* MainFrame::create_side_tools()
                 });
                 p->append_button(export_gcode_btn);
 
-#ifdef ATN_FARM_TOOLS
+                if (atn_farm_available()) {
                 // ATN: push the sliced plate (G-code + 3MF) straight to the printer farm.
                 SideButton* send_to_farm_btn = new SideButton(p, _L("Send to Farm"), "");
                 send_to_farm_btn->SetCornerRadius(0);
@@ -2219,7 +2231,7 @@ wxBoxSizer* MainFrame::create_side_tools()
                     p->Dismiss();
                 });
                 p->append_button(send_to_farm_btn);
-#endif
+                }
             }
 
             p->Popup(m_print_btn);
