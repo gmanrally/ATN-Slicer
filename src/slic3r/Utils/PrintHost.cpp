@@ -92,6 +92,22 @@ std::string PrintHost::get_print_host_webui(DynamicPrintConfig* config)
         webui_url = ElegooLink::get_print_host_webui(config);
         break;
     }
+    case htCrealityPrint: {
+        // Creality K2 (Klipper) serves its browsable UI (Fluidd) on port 4408; print_host points
+        // at the crealityprint control endpoint whose bare root 404s in the Device tab. Derive the
+        // Fluidd URL from the host so the tab loads a real page. An explicit print_host_webui
+        // (checked below when this stays empty) still overrides.
+        if (config->opt_string("print_host_webui").empty()) {
+            std::string host = config->opt_string("print_host");
+            const auto scheme = host.find("://");
+            if (scheme != std::string::npos)
+                host = host.substr(scheme + 3);
+            host = host.substr(0, host.find_first_of("/:"));   // strip any existing port/path
+            if (!host.empty())
+                webui_url = "http://" + host + ":4408/";
+        }
+        break;
+    }
     default: break;
     }
 
