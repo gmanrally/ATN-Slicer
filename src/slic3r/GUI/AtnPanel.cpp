@@ -17,6 +17,9 @@
 #include "libslic3r/GCode/ThumbnailData.hpp"
 #include "libslic3r/GCode/Thumbnails.hpp"
 #include "libslic3r/miniz_extension.hpp"
+#include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/QuadricEdgeCollapse.hpp"
+#include "slic3r/Utils/Http.hpp"
 
 #include <boost/log/trivial.hpp>
 #include <boost/filesystem.hpp>
@@ -27,6 +30,7 @@
 #include <algorithm>
 #include <cctype>
 #include <limits>
+#include <thread>
 #include <wx/base64.h>
 #include <wx/sizer.h>
 #include <wx/utils.h>
@@ -121,9 +125,95 @@ void AtnPanel::on_slice_complete()
 {
     // ATN: the sphere risk markers have been retired in favour of a g-code Thermal
     // view; nothing to surface here now beyond telling the page a slice finished.
+    send_fea_mesh();   // stage the plate's model mesh for the hybrid FEA view
     json msg;
     msg["command"] = "atn_slice_complete";
     send_to_page(msg.dump());
+}
+
+void AtnPanel::send_fea_mesh()
+{
+    // Feed the ATN Engine the current plate's MODEL MESH for the hybrid FEA view (part = real
+    // mesh, supports = g-code voxels reconstructed engine-side). Pure transport, no proprietary
+    // logic: merge the plate's printable instances in world/model coords, decimate, and POST
+    // {verts,faces,prealigned:false} to the local Engine, which registers it to the part field.
+    // Best-effort -- if the Engine isn't up/licensed it simply no-ops and /warp/view falls back
+    // to the voxel-only reconstruction.
+    if (!atn_port_open(8790))
+        return;
+    Plater* plater = wxGetApp().plater();
+    if (plater == nullptr)
+        return;
+    PartPlate* plate = plater->get_partplate_list().get_curr_plate();
+    if (plate == nullptr)
+        return;
+
+    // Merge the current plate's printable object instances into one mesh (world/model coords).
+    TriangleMesh merged;
+    Model& model = wxGetApp().model();
+    for (int obj_idx = 0; obj_idx < static_cast<int>(model.objects.size()); ++obj_idx) {
+        ModelObject* mo = model.objects[obj_idx];
+        TriangleMesh obj_mesh;
+        for (const ModelVolume* v : mo->volumes)
+            if (v->is_model_part()) {
+                TriangleMesh vm(v->mesh());
+                vm.transform(v->get_matrix(), true);
+                obj_mesh.merge(vm);
+            }
+        if (obj_mesh.empty())
+            continue;
+        for (int inst_idx = 0; inst_idx < static_cast<int>(mo->instances.size()); ++inst_idx) {
+            const ModelInstance* inst = mo->instances[inst_idx];
+            if (!inst->printable || !plate->contain_instance(obj_idx, inst_idx))
+                continue;
+            TriangleMesh m = obj_mesh;
+            m.transform(inst->get_matrix(), true);
+            merged.merge(m);
+        }
+    }
+    if (merged.its.vertices.empty() || merged.its.indices.empty())
+        return;
+
+    // g-code/print frame = world - plate origin (what the Print subtracts at export; see
+    // PartPlate set_plate_origin + local-coord calc). Sending in this frame registers the mesh
+    // EXACTLY onto the field + supports -- no bbox-align guessing (which the airbox's thin,
+    // sub-voxel ears would skew anyway).
+    const Vec3f plate_origin = plate->get_origin().cast<float>();
+
+    // Decimate + serialise + POST off the main thread. The model is stable post-slice and we take
+    // a value copy of the geometry, so the worker never touches live model state.
+    indexed_triangle_set its = std::move(merged.its);
+    std::thread([its = std::move(its), plate_origin]() mutable {
+        try {
+            constexpr uint32_t kTargetTris = 150000;
+            if (its.indices.size() > kTargetTris)
+                its_quadric_edge_collapse(its, kTargetTris);
+            for (Vec3f& v : its.vertices)
+                v -= plate_origin;   // world/model -> g-code/print frame
+
+            nlohmann::json body;
+            nlohmann::json& verts = body["verts"] = nlohmann::json::array();
+            for (const Vec3f& v : its.vertices)
+                verts.push_back({ v.x(), v.y(), v.z() });
+            nlohmann::json& faces = body["faces"] = nlohmann::json::array();
+            for (const auto& f : its.indices)
+                faces.push_back({ f[0], f[1], f[2] });
+            body["prealigned"] = true;
+
+            Http::post("http://127.0.0.1:8790/warp/mesh")
+                .header("Content-Type", "application/json")
+                .set_post_body(body.dump())
+                .on_complete([](std::string, unsigned status) {
+                    BOOST_LOG_TRIVIAL(info) << "atn: FEA mesh sent to Engine, status=" << status;
+                })
+                .on_error([](std::string, std::string err, unsigned status) {
+                    BOOST_LOG_TRIVIAL(warning) << "atn: FEA mesh send failed, status=" << status << " err=" << err;
+                })
+                .perform_sync();
+        } catch (const std::exception& e) {
+            BOOST_LOG_TRIVIAL(warning) << "atn: send_fea_mesh worker failed: " << e.what();
+        }
+    }).detach();
 }
 
 void AtnPanel::on_sent_to_farm()

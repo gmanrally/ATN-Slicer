@@ -40,6 +40,7 @@ private:
     void        handle_request_preflight();
     void        handle_capture_model();
     void        handle_apply_optimized(const std::string& b64, size_t raw_size);
+    void        send_fea_mesh();   // POST the current plate's model mesh to the Engine for the hybrid view
 
     wxWebView* m_browser{ nullptr };
 };
