@@ -57,9 +57,12 @@ private:
     wxGauge*      m_gauge {nullptr};
     wxStaticText* m_progress {nullptr};  // "42%  |  layer 120/300  |  ~1h12m left"
     wxStaticText* m_file {nullptr};
-    wxStaticText* m_nozzle {nullptr};
-    wxStaticText* m_bed {nullptr};
-    wxStaticText* m_chamber {nullptr};
+    wxStaticText* m_nozzle_cur {nullptr};
+    wxStaticText* m_nozzle_tgt {nullptr};
+    wxStaticText* m_bed_cur {nullptr};
+    wxStaticText* m_bed_tgt {nullptr};
+    wxStaticText* m_chamber_cur {nullptr};
+    wxStaticText* m_chamber_tgt {nullptr};
     wxStaticText* m_footer {nullptr};    // firmware + error code
 };
 

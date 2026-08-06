@@ -1,6 +1,8 @@
 #include "FlashforgeStatusPanel.hpp"
 
+#include <algorithm>
 #include <thread>
+#include <utility>
 
 #include <wx/sizer.h>
 #include <wx/stattext.h>
@@ -17,13 +19,49 @@ namespace GUI {
 
 static constexpr int POLL_INTERVAL_MS = 3000;
 
-static wxString fmt_temp(double cur, double target)
+// --- theme ------------------------------------------------------------------
+namespace {
+struct Palette { wxColour page, card, value, muted, accent; };
+
+Palette palette()
 {
-    if (cur < 0)
-        return _L("--");
-    if (target > 0)
-        return wxString::Format("%.0f / %.0f °C", cur, target);
-    return wxString::Format("%.0f °C", cur);
+    Palette p;
+    if (wxGetApp().dark_mode()) {
+        p.page   = wxColour(28, 28, 30);
+        p.card   = wxColour(45, 45, 48);
+        p.value  = wxColour(236, 236, 240);
+        p.muted  = wxColour(150, 152, 160);
+        p.accent = wxColour(56, 150, 255);
+    } else {
+        p.page   = wxColour(250, 250, 252);
+        p.card   = wxColour(244, 244, 247);
+        p.value  = wxColour(28, 28, 32);
+        p.muted  = wxColour(120, 122, 130);
+        p.accent = wxColour(23, 110, 214);
+    }
+    return p;
+}
+
+// State -> a status colour so "Printing", "Error", etc. read at a glance.
+wxColour state_colour(const std::string& raw, const Palette& p)
+{
+    std::string s = raw;
+    for (auto& c : s) c = (char) tolower((unsigned char) c);
+    if (s == "printing" || s == "busy")                   return p.accent;
+    if (s == "ready" || s == "idle" || s == "completed")  return wxColour(38, 170, 90);
+    if (s == "pause" || s == "paused")                    return wxColour(220, 160, 40);
+    if (s == "error")                                     return wxColour(214, 74, 74);
+    return p.value;
+}
+} // namespace
+
+static wxString fmt_cur_temp(double cur) { return cur < 0 ? wxString("--") : wxString::Format("%.0f", cur) + wxString::FromUTF8("°C"); }
+static wxString fmt_tgt_temp(double tgt) { return tgt >= 0 ? "/ " + wxString::Format("%.0f", tgt) + wxString::FromUTF8("°C") : wxString(); }
+
+static void set_temp(wxStaticText* cur, wxStaticText* tgt, double c, double t)
+{
+    cur->SetLabel(fmt_cur_temp(c));
+    tgt->SetLabel(fmt_tgt_temp(t));
 }
 
 static wxString fmt_duration(double seconds)
@@ -58,7 +96,7 @@ FlashforgeStatusPanel::FlashforgeStatusPanel(wxWindow* parent)
     , m_timer(this)
     , m_alive(std::make_shared<std::atomic<bool>>(true))
 {
-    SetBackgroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW));
+    SetBackgroundColour(palette().page);
     build_ui();
     Bind(wxEVT_TIMER, &FlashforgeStatusPanel::on_timer, this);
 }
@@ -74,52 +112,100 @@ FlashforgeStatusPanel::~FlashforgeStatusPanel()
 
 void FlashforgeStatusPanel::build_ui()
 {
-    const int gap = FromDIP(6);
-    auto* root = new wxBoxSizer(wxVERTICAL);
+    const Palette pal = palette();
+    const int     pad = FromDIP(14);
+    auto*         root = new wxBoxSizer(wxVERTICAL);
 
-    auto title_font = GetFont();
-    title_font.SetPointSize(title_font.GetPointSize() + 3);
-    title_font.MakeBold();
+    // Card factory: a filled panel with a small-caps title; returns its inner content sizer to fill.
+    auto make_card = [this, pal, pad](const wxString& title) -> std::pair<wxPanel*, wxBoxSizer*> {
+        auto* card = new wxPanel(this, wxID_ANY);
+        card->SetBackgroundColour(pal.card);
+        auto* v = new wxBoxSizer(wxVERTICAL);
+        if (!title.empty()) {
+            auto* t = new wxStaticText(card, wxID_ANY, title);
+            auto  f = t->GetFont(); f.MakeBold(); f.SetPointSize(std::max(6, f.GetPointSize() - 1));
+            t->SetFont(f);
+            t->SetForegroundColour(pal.muted);
+            v->Add(t, 0, wxLEFT | wxRIGHT | wxTOP, pad);
+        }
+        auto* content = new wxBoxSizer(wxVERTICAL);
+        v->Add(content, 1, wxEXPAND | wxALL, pad);
+        card->SetSizer(v);
+        return {card, content};
+    };
 
-    // Live camera view -- hidden until the printer reports a stream URL, then it is the hero of the
-    // tab. Proportion 1 so it grows with the window; the status strip below stays at natural height.
-    m_camera = new FlashforgeCameraView(this);
-    m_camera->SetMinSize(FromDIP(wxSize(-1, 260)));
-    m_camera->Show(false);
-    root->Add(m_camera, 1, wxEXPAND | wxALL, FromDIP(16));
-
+    // ---- status header ----
+    auto head_font = GetFont();
+    head_font.SetPointSize(head_font.GetPointSize() + 4);
+    head_font.MakeBold();
     m_state = new wxStaticText(this, wxID_ANY, _L("Connecting…"));
-    m_state->SetFont(title_font);
-    root->Add(m_state, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
+    m_state->SetFont(head_font);
+    root->Add(m_state, 0, wxLEFT | wxRIGHT | wxTOP, pad);
 
     m_conn = new wxStaticText(this, wxID_ANY, _L("Reading status from the printer over your local network…"));
-    root->Add(m_conn, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
+    m_conn->SetForegroundColour(pal.muted);
+    root->Add(m_conn, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(3));
 
-    m_gauge = new wxGauge(this, wxID_ANY, 1000, wxDefaultPosition, wxSize(-1, FromDIP(10)));
-    root->Add(m_gauge, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
+    // ---- camera hero (shown only while the printer streams) ----
+    m_camera = new FlashforgeCameraView(this);
+    m_camera->SetMinSize(FromDIP(wxSize(-1, 300)));
+    m_camera->Show(false);
+    root->Add(m_camera, 1, wxEXPAND | wxALL, pad);
 
-    m_progress = new wxStaticText(this, wxID_ANY, wxEmptyString);
-    root->Add(m_progress, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
+    // ---- print-job card ----
+    {
+        auto card_pair = make_card(_L("PRINT JOB"));
+        wxBoxSizer* c = card_pair.second;
+        wxPanel*    card = card_pair.first;
 
-    m_file = new wxStaticText(this, wxID_ANY, wxEmptyString);
-    root->Add(m_file, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
+        m_file = new wxStaticText(card, wxID_ANY, _L("No active job"));
+        { auto f = m_file->GetFont(); f.MakeBold(); f.SetPointSize(f.GetPointSize() + 1); m_file->SetFont(f); }
+        m_file->SetForegroundColour(pal.value);
+        c->Add(m_file, 0, wxBOTTOM, FromDIP(8));
 
-    auto* temps = new wxBoxSizer(wxHORIZONTAL);
-    m_nozzle  = new wxStaticText(this, wxID_ANY, _L("Nozzle: --"));
-    m_bed     = new wxStaticText(this, wxID_ANY, _L("Bed: --"));
-    m_chamber = new wxStaticText(this, wxID_ANY, wxEmptyString);
-    temps->Add(m_nozzle, 0, wxRIGHT, FromDIP(24));
-    temps->Add(m_bed, 0, wxRIGHT, FromDIP(24));
-    temps->Add(m_chamber, 0);
-    root->Add(temps, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
+        m_gauge = new wxGauge(card, wxID_ANY, 1000, wxDefaultPosition, wxSize(-1, FromDIP(8)));
+        c->Add(m_gauge, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
 
-    root->AddStretchSpacer(1);
+        m_progress = new wxStaticText(card, wxID_ANY, wxEmptyString);
+        m_progress->SetForegroundColour(pal.muted);
+        c->Add(m_progress, 0);
 
+        root->Add(card, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, pad);
+    }
+
+    // ---- temperature card ----
+    {
+        auto card_pair = make_card(_L("TEMPERATURE"));
+        wxBoxSizer* c = card_pair.second;
+        wxPanel*    card = card_pair.first;
+
+        auto add_row = [this, card, c, pal](const wxString& label, wxStaticText*& cur, wxStaticText*& tgt) {
+            auto* row = new wxBoxSizer(wxHORIZONTAL);
+            auto* l   = new wxStaticText(card, wxID_ANY, label);
+            l->SetForegroundColour(pal.muted);
+            l->SetMinSize(FromDIP(wxSize(78, -1)));
+            cur = new wxStaticText(card, wxID_ANY, "--");
+            { auto f = cur->GetFont(); f.SetPointSize(f.GetPointSize() + 4); f.MakeBold(); cur->SetFont(f); }
+            cur->SetForegroundColour(pal.accent);
+            tgt = new wxStaticText(card, wxID_ANY, wxEmptyString);
+            tgt->SetForegroundColour(pal.muted);
+            row->Add(l,   0, wxALIGN_CENTRE_VERTICAL | wxRIGHT, FromDIP(8));
+            row->Add(cur, 0, wxALIGN_CENTRE_VERTICAL | wxRIGHT, FromDIP(6));
+            row->Add(tgt, 0, wxALIGN_CENTRE_VERTICAL);
+            c->Add(row, 0, wxTOP | wxBOTTOM, FromDIP(3));
+        };
+        add_row(_L("Nozzle"),  m_nozzle_cur,  m_nozzle_tgt);
+        add_row(_L("Bed"),     m_bed_cur,     m_bed_tgt);
+        add_row(_L("Chamber"), m_chamber_cur, m_chamber_tgt);
+
+        root->Add(card, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, pad);
+    }
+
+    // ---- footer (firmware + error) ----
     m_footer = new wxStaticText(this, wxID_ANY, wxEmptyString);
-    m_footer->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
-    root->Add(m_footer, 0, wxALL, FromDIP(16));
+    m_footer->SetForegroundColour(pal.muted);
+    root->Add(m_footer, 0, wxALL, pad);
 
-    (void) gap;
     SetSizer(root);
 }
 
@@ -162,14 +248,15 @@ void FlashforgeStatusPanel::poll_now()
     const std::string serial = m_config.has("flashforge_serial_number") ? m_config.opt_string("flashforge_serial_number") : "";
     if (code.empty() || serial.empty()) {
         m_state->SetLabel(_L("Access code needed"));
+        m_state->SetForegroundColour(palette().muted);
         m_conn->SetLabel(_L("Enter the printer's access code (shown on the printer under LAN mode) in the "
                             "API Key / Password field of the printer settings, then reopen the Device tab."));
         m_gauge->SetValue(0);
         m_progress->SetLabel(wxEmptyString);
-        m_file->SetLabel(wxEmptyString);
-        m_nozzle->SetLabel(_L("Nozzle: --"));
-        m_bed->SetLabel(_L("Bed: --"));
-        m_chamber->SetLabel(wxEmptyString);
+        m_file->SetLabel(_L("No active job"));
+        set_temp(m_nozzle_cur,  m_nozzle_tgt,  -1, -1);
+        set_temp(m_bed_cur,     m_bed_tgt,     -1, -1);
+        set_temp(m_chamber_cur, m_chamber_tgt, -1, -1);
         if (m_camera) { m_camera->Stop(); m_camera->Show(false); }
         Layout();
         return;
@@ -196,24 +283,27 @@ void FlashforgeStatusPanel::poll_now()
             if (!*alive)
                 return;
             self->m_in_flight = false;
+            const Palette pal = palette();
 
             if (!st.valid) {
                 self->m_state->SetLabel(_L("Offline"));
+                self->m_state->SetForegroundColour(wxColour(214, 74, 74));
                 self->m_conn->SetLabel(msg.empty()
                     ? _L("Could not reach the printer on your local network. Check that it is powered on and on the same network.")
                     : msg);
                 self->m_gauge->SetValue(0);
                 self->m_progress->SetLabel(wxEmptyString);
-                self->m_file->SetLabel(wxEmptyString);
-                self->m_nozzle->SetLabel(_L("Nozzle: --"));
-                self->m_bed->SetLabel(_L("Bed: --"));
-                self->m_chamber->SetLabel(wxEmptyString);
+                self->m_file->SetLabel(_L("No active job"));
+                set_temp(self->m_nozzle_cur,  self->m_nozzle_tgt,  -1, -1);
+                set_temp(self->m_bed_cur,     self->m_bed_tgt,     -1, -1);
+                set_temp(self->m_chamber_cur, self->m_chamber_tgt, -1, -1);
                 if (self->m_camera) { self->m_camera->Stop(); self->m_camera->Show(false); }
                 self->Layout();
                 return;
             }
 
             self->m_state->SetLabel(pretty_state(st.state));
+            self->m_state->SetForegroundColour(state_colour(st.state, pal));
             self->m_conn->SetLabel(_L("Connected over local network"));
 
             // Show the live view when the printer reports a stream URL; Start() is a no-op if that URL
@@ -243,13 +333,11 @@ void FlashforgeStatusPanel::poll_now()
                 self->m_progress->SetLabel(wxEmptyString);
             }
 
-            self->m_file->SetLabel(st.file_name.empty() ? wxString(wxEmptyString)
-                                                        : _L("File: ") + from_u8(st.file_name));
-            self->m_nozzle->SetLabel(_L("Nozzle: ") + fmt_temp(st.nozzle_temp, st.nozzle_target));
-            self->m_bed->SetLabel(_L("Bed: ") + fmt_temp(st.bed_temp, st.bed_target));
-            self->m_chamber->SetLabel(st.chamber_temp > 0
-                ? _L("Chamber: ") + wxString::Format("%.0f °C", st.chamber_temp)
-                : wxString(wxEmptyString));
+            self->m_file->SetLabel(st.file_name.empty() ? _L("No active job")
+                                                        : from_u8(st.file_name));
+            set_temp(self->m_nozzle_cur,  self->m_nozzle_tgt,  st.nozzle_temp, st.nozzle_target);
+            set_temp(self->m_bed_cur,     self->m_bed_tgt,     st.bed_temp,    st.bed_target);
+            set_temp(self->m_chamber_cur, self->m_chamber_tgt, st.chamber_temp, -1);
 
             wxString footer;
             if (!st.firmware.empty())
