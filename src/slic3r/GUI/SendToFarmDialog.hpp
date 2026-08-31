@@ -31,9 +31,9 @@
 class wxTextCtrl;
 class wxChoice;
 class wxCheckBox;
-class wxButton;
 class wxStaticText;
 class wxTimer;
+class Button;   // Orca themed button (Widgets/Button.hpp), used for the branded actions
 
 namespace Slic3r {
 namespace GUI {
@@ -48,6 +48,7 @@ private:
     std::string farm_url() const;
     std::string farm_token() const;         // cloud session token (X-Farm-Token), or ""
     void fetch_printers();
+    void fetch_works_orders();              // populate the Works order dropdown
     void fetch_next_part_number();          // peek + prefill the auto part number
     void apply_part_number(const std::string& pn); // use pn as the project/save name
     void lookup_part();
@@ -65,15 +66,19 @@ private:
     wxTextCtrl*   m_name{ nullptr };
     wxTextCtrl*   m_rev{ nullptr };
     wxChoice*     m_printer{ nullptr };
+    wxTextCtrl*   m_order_number{ nullptr };   // free-text customer order / PO
+    wxChoice*     m_works_order{ nullptr };     // pick an open works order instead
     wxCheckBox*   m_queue{ nullptr };
+    wxTextCtrl*   m_notes{ nullptr };   // free-text notes stored against this revision in the farm
     wxStaticText* m_lookup{ nullptr };
     wxStaticText* m_compat{ nullptr };   // "Sliced for <model> — showing compatible printers"
     wxStaticText* m_auth_status{ nullptr };
-    wxButton*     m_auth_btn{ nullptr };
+    Button*       m_auth_btn{ nullptr };
     wxStaticText* m_status{ nullptr };
-    wxButton*     m_send{ nullptr };
+    Button*       m_send{ nullptr };
 
     std::vector<int> m_printer_ids;   // index in m_printer -> farm printer id
+    std::vector<int> m_works_order_ids;   // index in m_works_order -> works order id (0 = none)
     bool m_have_opened_pn{ false };   // set once the opened part number is known
 
     // Machine this plate was sliced for — used to filter the farm printer list.

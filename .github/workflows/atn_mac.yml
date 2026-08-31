@@ -1,0 +1,41 @@
+name: ATN macOS build
+
+# Builds ONLY the macOS app bundle for the ATN Slicer, reusing the upstream
+# build_check_cache -> build_deps -> build_orca chain (so it caches deps and
+# produces OrcaSlicer_Mac_bundle_<arch>_<sha>.tar.gz as an artifact).
+#
+# Deliberately named atn_* (not build_*) so it does NOT match build_all.yml's
+# path filter — pushing this file alone won't kick off the full all-platform build.
+# Trigger it from the Actions tab (Run workflow) or `gh workflow run atn_mac.yml`.
+
+on:
+  # Auto-build on a push to the published (pre-2.5.0) fork branch. main is deliberately
+  # excluded — it carries the PARKED 2.5.0 upstream merge that crashes on complex models.
+  push:
+    branches:
+      - farm/cloud-print
+    paths:
+      - 'src/**'
+      - 'deps/**'
+      - '**/CMakeLists.txt'
+      - 'version.inc'
+      - '.github/workflows/atn_mac.yml'
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 'macOS architecture'
+        type: choice
+        options:
+          - arm64
+          - x86_64
+        default: arm64
+
+jobs:
+  macos:
+    name: Build macOS ${{ inputs.arch || 'arm64' }}
+    uses: ./.github/workflows/build_check_cache.yml
+    with:
+      os: macos-14
+      arch: ${{ inputs.arch || 'arm64' }}   # push events carry no input -> default arm64
+      build-deps-only: false
+    secrets: inherit

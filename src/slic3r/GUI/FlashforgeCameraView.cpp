@@ -1,6 +1,7 @@
 #include "FlashforgeCameraView.hpp"
 
 #include <thread>
+#include <chrono>
 
 #include <boost/asio.hpp>
 
@@ -27,9 +28,12 @@ struct FlashforgeCameraView::StreamState
     std::string       error;                  // last transport error, for display
     std::atomic<bool> running {true};
     std::atomic<bool> got_frame {false};
-
-    std::mutex                   sock_mtx;
-    std::shared_ptr<tcp::socket> sock;        // held so Stop() can close and interrupt a blocking read
+    // NOTE: the socket is deliberately NOT stored here. It is owned entirely by the worker
+    // thread (created, read, and destroyed on that thread). asio sockets are not thread-safe,
+    // and a previous version closed this socket from Stop() (the GUI thread) to interrupt the
+    // blocking read — that cross-thread close corrupted asio's internal state and access-
+    // violated the worker (crash on the FlashForge camera Expand). The worker now self-
+    // terminates via `running` + a receive timeout instead; nothing else touches the socket.
 };
 
 // Parse "http://host:port/path" -> (host, port, path). Defaults: port 80, path "/". Tolerant enough
@@ -76,6 +80,11 @@ void FlashforgeCameraView::Start(const wxString& mjpeg_url)
     m_state = state;
 
     const std::string url = mjpeg_url.ToStdString();
+    // Detached worker that OWNS its socket end-to-end (created, read, destroyed on this thread)
+    // and self-terminates when state->running goes false. A bounded receive timeout makes the
+    // blocking read return periodically so it notices Stop() promptly WITHOUT any other thread
+    // touching the socket; a short reconnect loop rides out transient drops and the brief window
+    // where another view is releasing a single-client camera's one connection (AD5X / 5M).
     std::thread([state, url]() {
         std::string host, port, path;
         if (!parse_url(url, host, port, path)) {
@@ -84,60 +93,80 @@ void FlashforgeCameraView::Start(const wxString& mjpeg_url)
             state->running = false;
             return;
         }
-        try {
-            boost::asio::io_context io;
-            tcp::resolver resolver(io);
+        int idle_fails = 0;
+        while (state->running) {
+            bool got_any = false;
             boost::system::error_code ec;
-            auto endpoints = resolver.resolve(host, port, ec);
-            if (ec) { std::lock_guard<std::mutex> lk(state->mtx); state->error = ec.message(); state->running = false; return; }
-
-            auto sock = std::make_shared<tcp::socket>(io);
-            boost::asio::connect(*sock, endpoints, ec);
-            if (ec) { std::lock_guard<std::mutex> lk(state->mtx); state->error = ec.message(); state->running = false; return; }
-            { std::lock_guard<std::mutex> lk(state->sock_mtx); state->sock = sock; }
-
-            // HTTP/1.0 so the server does not use chunked transfer-encoding; we scan the raw body for
-            // JPEG markers, so we do not need to parse the multipart boundary or the HTTP headers
-            // (they are ASCII and never contain 0xFFD8).
-            std::string req = "GET " + path + " HTTP/1.0\r\nHost: " + host +
-                              "\r\nUser-Agent: OrcaSlicer\r\nAccept: */*\r\n\r\n";
-            boost::asio::write(*sock, boost::asio::buffer(req), ec);
-            if (ec) { std::lock_guard<std::mutex> lk(state->mtx); state->error = ec.message(); state->running = false; return; }
-
-            std::string buf;
-            std::vector<char> chunk(65536);
-            while (state->running) {
-                size_t n = sock->read_some(boost::asio::buffer(chunk), ec);
-                if (ec || n == 0) break;
-                buf.append(chunk.data(), n);
-
-                // Slice out every complete JPEG (SOI 0xFFD8 .. EOI 0xFFD9) now in the buffer.
-                while (true) {
-                    auto soi = buf.find("\xff\xd8");
-                    if (soi == std::string::npos) {
-                        if (buf.size() > MAX_BUFFER) buf.clear();
-                        break;
-                    }
-                    auto eoi = buf.find("\xff\xd9", soi + 2);
-                    if (eoi == std::string::npos) {
-                        if (soi > 0) buf.erase(0, soi);           // drop leading non-JPEG (HTTP hdrs, boundary)
-                        if (buf.size() > MAX_BUFFER) buf.clear();
-                        break;
-                    }
-                    std::string frame = buf.substr(soi, eoi + 2 - soi);
-                    buf.erase(0, eoi + 2);
-                    {
-                        std::lock_guard<std::mutex> lk(state->mtx);
-                        state->latest = std::move(frame);
-                        ++state->frame_id;
-                        state->got_frame = true;
+            try {
+                boost::asio::io_context io;
+                tcp::resolver resolver(io);
+                auto endpoints = resolver.resolve(host, port, ec);
+                tcp::socket sock(io);
+                if (!ec) boost::asio::connect(sock, endpoints, ec);
+                if (!ec) {
+                    // Bounded blocking reads: read_some returns after this long with no data, so
+                    // the loop can re-check running (and reconnect) with no cross-thread close.
+#ifdef _WIN32
+                    DWORD tv = 250;
+                    setsockopt(sock.native_handle(), SOL_SOCKET, SO_RCVTIMEO, (const char*) &tv, sizeof(tv));
+#else
+                    timeval tv{0, 250000};
+                    setsockopt(sock.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+#endif
+                    // HTTP/1.0 so the server does not use chunked transfer-encoding; we scan the
+                    // raw body for JPEG markers, so we ignore the multipart boundary + HTTP headers
+                    // (they are ASCII and never contain 0xFFD8).
+                    std::string req = "GET " + path + " HTTP/1.0\r\nHost: " + host +
+                                      "\r\nUser-Agent: OrcaSlicer\r\nAccept: */*\r\n\r\n";
+                    boost::asio::write(sock, boost::asio::buffer(req), ec);
+                    std::string buf;
+                    std::vector<char> chunk(65536);
+                    while (!ec && state->running) {
+                        size_t n = sock.read_some(boost::asio::buffer(chunk), ec);
+                        if (ec == boost::asio::error::timed_out ||
+                            ec == boost::asio::error::try_again ||
+                            ec == boost::asio::error::would_block) {
+                            ec.clear();
+                            continue;                 // read timeout — just re-check running
+                        }
+                        if (ec || n == 0)
+                            break;                    // real disconnect
+                        got_any = true;
+                        buf.append(chunk.data(), n);
+                        // Slice out every complete JPEG (SOI 0xFFD8 .. EOI 0xFFD9) in the buffer.
+                        while (true) {
+                            auto soi = buf.find("\xff\xd8");
+                            if (soi == std::string::npos) { if (buf.size() > MAX_BUFFER) buf.clear(); break; }
+                            auto eoi = buf.find("\xff\xd9", soi + 2);
+                            if (eoi == std::string::npos) {
+                                if (soi > 0) buf.erase(0, soi);   // drop leading non-JPEG (HTTP hdrs)
+                                if (buf.size() > MAX_BUFFER) buf.clear();
+                                break;
+                            }
+                            std::string frame = buf.substr(soi, eoi + 2 - soi);
+                            buf.erase(0, eoi + 2);
+                            std::lock_guard<std::mutex> lk(state->mtx);
+                            state->latest = std::move(frame);
+                            ++state->frame_id;
+                            state->got_frame = true;
+                        }
                     }
                 }
+                // sock destructs HERE, on this worker thread — the only thread that touches it.
+            } catch (const std::exception& e) {
+                std::lock_guard<std::mutex> lk(state->mtx);
+                if (state->error.empty()) state->error = e.what();
+            } catch (...) {
             }
-        } catch (const std::exception& e) {
-            std::lock_guard<std::mutex> lk(state->mtx);
-            if (state->error.empty()) state->error = e.what();
-        } catch (...) {
+            if (!state->running)
+                break;
+            // Reconnect on a dropped stream; give up (leave "stream ended") only after a run of
+            // frame-less failures long enough to cover a single-client handoff.
+            idle_fails = got_any ? 0 : idle_fails + 1;
+            if (idle_fails > 12)
+                break;
+            for (int i = 0; i < 2 && state->running; ++i)   // ~200ms backoff, responsive to Stop
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         state->running = false;
     }).detach();
@@ -150,14 +179,10 @@ void FlashforgeCameraView::Stop()
     m_timer.Stop();
     if (!m_state)
         return;
+    // Signal only. The worker owns its socket and tears it down itself within the receive
+    // timeout (~250 ms). We must NOT close it from here: asio sockets aren't thread-safe, and a
+    // cross-thread close was access-violating the worker (crash on the camera Expand pop-out).
     m_state->running = false;
-    {
-        std::lock_guard<std::mutex> lk(m_state->sock_mtx);
-        if (m_state->sock) {
-            boost::system::error_code ec;
-            m_state->sock->close(ec);        // interrupts the worker's blocking read
-        }
-    }
     m_state.reset();                          // worker keeps its own shared_ptr until it exits
     m_active_url.clear();
 }

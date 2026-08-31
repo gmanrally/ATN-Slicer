@@ -6,6 +6,9 @@
 #include <deque>
 #include <sstream>
 #include <exception>
+#ifdef _WIN32
+#include <excpt.h>   // EXCEPTION_EXECUTE_HANDLER for the SEH guard in form_file_read_cb
+#endif
 #include <boost/filesystem/fstream.hpp>
 #include <boost/filesystem/path.hpp>
 #include <boost/filesystem.hpp>
@@ -272,9 +275,20 @@ int Http::priv::xfercb_legacy(void *userp, double dltotal, double dlnow, double 
 	return xfercb(userp, dltotal, dlnow, ultotal, ulnow);
 }
 
-size_t Http::priv::form_file_read_cb(char *buffer, size_t size, size_t nitems, void *userp)
+static size_t form_file_read_cb_impl(char *buffer, size_t size, size_t nitems, void *userp)
 {
     auto f = reinterpret_cast<form_file*>(userp);
+
+	// No stream pointer = a request with no body (e.g. a bodyless POST whose READDATA we now null out):
+	// report EOF so curl sends an empty body, rather than reading garbage.
+	if (f == nullptr) {
+		return 0;
+	}
+	// Defensive: if the source file isn't open (vanished / replaced / a stale handle), abort the
+	// transfer cleanly instead of dereferencing a broken stream buffer.
+	if (!f->ifs.is_open()) {
+		return CURL_READFUNC_ABORT;
+	}
 
 	try {
 	    size_t max_read_size = size * nitems;
@@ -295,6 +309,25 @@ size_t Http::priv::form_file_read_cb(char *buffer, size_t size, size_t nitems, v
 	}
 
 	return f->ifs.gcount();
+}
+
+size_t Http::priv::form_file_read_cb(char *buffer, size_t size, size_t nitems, void *userp)
+{
+#ifdef _WIN32
+	// A corrupted/dangling upload stream (a form_file whose content_length reads as garbage and whose
+	// ifs is trashed -- a heap-corruption/use-after-free we've traced but not root-caused) faults inside
+	// tellg()/read() on the curl worker thread, which crashes the whole app. The is_open() guard below
+	// can't catch it because partially-valid freed memory still reports "open". Contain it with an SEH
+	// guard so the access violation becomes a clean CURL_READFUNC_ABORT: the upload fails (recoverable,
+	// handled by http_perform's CURLE_ABORTED_BY_CALLBACK path) instead of taking the process down.
+	__try {
+		return form_file_read_cb_impl(buffer, size, nitems, userp);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		return CURL_READFUNC_ABORT;
+	}
+#else
+	return form_file_read_cb_impl(buffer, size, nitems, userp);
+#endif
 }
 
 size_t Http::priv::headers_cb(char *buffer, size_t size, size_t nitems, void *userp)
@@ -432,6 +465,14 @@ void Http::priv::http_perform()
 	::curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writecb);
 	::curl_easy_setopt(curl, CURLOPT_WRITEDATA, static_cast<void*>(this));
 	::curl_easy_setopt(curl, CURLOPT_READFUNCTION, form_file_read_cb);
+	// A POST with no body (e.g. the farm auth kick) still has CURLOPT_POST set, so curl tries to READ
+	// the body from the callback above -- and with no explicit READDATA that pointer defaults to stdin,
+	// which form_file_read_cb then dereferences as a form_file and crashes. Point READDATA at null for
+	// everything except a PUT-file upload (which sets its own above); the callback treats null as an
+	// empty body. Form uploads are unaffected -- curl passes each part's own stream, not READDATA.
+	if (!putFile) {
+		::curl_easy_setopt(curl, CURLOPT_READDATA, nullptr);
+	}
 	//BBS set header functions
 	::curl_easy_setopt(curl, CURLOPT_HEADERDATA, static_cast<void *>(this));
 	::curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, headers_cb);

@@ -36,6 +36,7 @@ enum CUSTOM_ID
     ID_MODEL_STORE,
     ID_PUBLISH,
     ID_CALIB,
+    ID_FARM,
     ID_TOOL_BAR = 3200,
     ID_AMS_NOTEBOOK,
 };
@@ -315,6 +316,17 @@ void BBLTopbar::Init(wxFrame* parent)
     wxBitmap calib_bitmap_inactive = create_scaled_bitmap("calib_sf_inactive", nullptr, TOPBAR_ICON_SIZE);
     m_calib_item                   = this->AddTool(ID_CALIB, _L("Calibration"), calib_bitmap);
     m_calib_item->SetDisabledBitmap(calib_bitmap_inactive);
+
+    // ATN: printer-farm dashboard — opens in its own window (kept out of the slicing
+    // workflow tabs). Always shown; the farm decides dashboard vs upgrade/sign-up by
+    // the user's subscription.
+    wxBitmap farm_bitmap = create_scaled_bitmap("monitor", nullptr, TOPBAR_ICON_SIZE);
+    m_farm_item          = this->AddTool(ID_FARM, _L("Farm"), farm_bitmap, _L("Open the printer-farm dashboard"));
+    // NOTE: the Farm click is handled in OnMouseLeftDown (hit-test), NOT via a wxEVT_TOOL
+    // binding. The base wxAuiToolBar only fires tool-click events from OnLeftUp while it
+    // still holds the mouse capture, but our OnMouseLeftUp releases that capture first, so
+    // plain tool-click handlers never dispatch on this top bar (every other action here is
+    // routed through the dropdown event). Hit-testing on mouse-down is deterministic.
 
     this->AddSpacer(FromDIP(25));
     //this->AddStretchSpacer(1);
@@ -708,6 +720,15 @@ void BBLTopbar::OnMouseLeftDown(wxMouseEvent& event)
     wxPoint frame_pos = m_frame->GetScreenPosition();
     wxAuiToolBarItem* item = this->FindToolByPosition(event.GetX(), event.GetY());
     m_delta = mouse_pos - frame_pos;
+
+    // ATN: open the printer-farm dashboard window on the Farm tool. Handled here (not via
+    // a wxEVT_TOOL binding) because the base wxAuiToolBar tool-click event is swallowed on
+    // this top bar — see the note by the Farm AddTool call.
+    if (item != NULL && item == m_farm_item)
+    {
+        if (auto* mf = dynamic_cast<MainFrame*>(m_frame)) mf->show_farm_window();
+        return;   // consume: don't start a window-drag / capture
+    }
 
     if (item == NULL || item->GetWindow() == m_title_ctrl)
     {

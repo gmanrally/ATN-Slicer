@@ -5,6 +5,7 @@
 #include "Plater.hpp"
 #include "I18N.hpp"
 #include "PartPlate.hpp"
+#include "Widgets/Button.hpp"
 #include "slic3r/Utils/Http.hpp"
 #include "libslic3r/Format/bbs_3mf.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -16,6 +17,7 @@
 #include <wx/choice.h>
 #include <wx/checkbox.h>
 #include <wx/button.h>
+#include <wx/panel.h>
 #include <wx/timer.h>
 #include <wx/utils.h>   // wxLaunchDefaultBrowser
 
@@ -54,78 +56,180 @@ static bool looks_like_part_number(const std::string& s)
     return true;
 }
 
+// --- ATN branding ---------------------------------------------------------
+// Mirrors the FlashForge Device panel's palette style, with the accent set to the ATN teal from the
+// web panel, so the farm dialog reads as one of the ATN windows in both light and dark mode.
+namespace {
+struct Palette { wxColour page, card, value, muted, accent, accent_hover, accent_soft, on_accent; };
+
+Palette palette()
+{
+    Palette p;
+    if (wxGetApp().dark_mode()) {
+        p.page = wxColour(28, 28, 30);       p.card = wxColour(40, 42, 44);
+        p.value = wxColour(236, 236, 240);   p.muted = wxColour(150, 152, 160);
+        p.accent = wxColour(55, 176, 176);   p.accent_hover = wxColour(78, 198, 198);
+        p.accent_soft = wxColour(30, 52, 52); p.on_accent = wxColour(12, 24, 24);
+    } else {
+        p.page = wxColour(251, 250, 246);    p.card = wxColour(255, 255, 255);
+        p.value = wxColour(26, 32, 30);      p.muted = wxColour(108, 120, 114);
+        p.accent = wxColour(11, 110, 110);   p.accent_hover = wxColour(9, 84, 84);
+        p.accent_soft = wxColour(230, 243, 243); p.on_accent = wxColour(255, 255, 255);
+    }
+    return p;
+}
+
+// Style an Orca Button by hand (no SetStyle, so these colours -- not the app theme -- drive render).
+void style_button(Button* b, const wxColour& bg, const wxColour& bg_hover,
+                  const wxColour& border, const wxColour& text, bool bold)
+{
+    b->SetCornerRadius(b->FromDIP(4));
+    b->SetPaddingSize(b->FromDIP(wxSize(18, 7)));
+    b->SetMinSize(b->FromDIP(wxSize(112, 30)));
+    b->SetBackgroundColor(StateColor(std::pair<wxColour, int>(bg_hover, StateColor::Hovered),
+                                     std::pair<wxColour, int>(bg,       StateColor::Normal)));
+    b->SetBorderColor(StateColor(std::pair<wxColour, int>(border, StateColor::Normal)));
+    b->SetTextColor(StateColor(std::pair<wxColour, int>(text, StateColor::Normal)));
+    if (bold) { auto f = b->GetFont(); f.MakeBold(); b->SetFont(f); }
+}
+} // namespace
+
 SendToFarmDialog::SendToFarmDialog(wxWindow* parent)
     : wxDialog(parent, wxID_ANY, _L("Send to Farm"), wxDefaultPosition, wxDefaultSize,
                wxDEFAULT_DIALOG_STYLE)
 {
-    const int em = wxGetApp().em_unit();
+    const int     em  = wxGetApp().em_unit();
+    const int     pad = FromDIP(12);
+    const Palette pal = palette();
+    SetBackgroundColour(pal.page);
+
     auto* root = new wxBoxSizer(wxVERTICAL);
+
+    // --- brand header: accent title + subtitle + a thin accent rule ---
+    auto* title = new wxStaticText(this, wxID_ANY, _L("Send to Farm"));
+    { auto f = title->GetFont(); f.SetPointSize(f.GetPointSize() + 6); f.MakeBold(); title->SetFont(f); }
+    title->SetForegroundColour(pal.accent);
+    root->Add(title, 0, wxLEFT | wxRIGHT | wxTOP, pad);
+
+    auto* subtitle = new wxStaticText(this, wxID_ANY, _L("Push this sliced plate to your printer farm."));
+    subtitle->SetForegroundColour(pal.muted);
+    root->Add(subtitle, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(2));
+
+    auto* rule = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(-1, FromDIP(2)));
+    rule->SetBackgroundColour(pal.accent);
+    root->Add(rule, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, pad);
+
+    // --- form card ---
+    auto* card  = new wxPanel(this, wxID_ANY);
+    card->SetBackgroundColour(pal.card);
+    auto* cardv = new wxBoxSizer(wxVERTICAL);
+
     auto* grid = new wxFlexGridSizer(0, 2, em / 2, em);
     grid->AddGrowableCol(1, 1);
-
     auto add_row = [&](const wxString& label, wxWindow* ctrl) {
-        grid->Add(new wxStaticText(this, wxID_ANY, label), 0, wxALIGN_CENTER_VERTICAL);
+        auto* l = new wxStaticText(card, wxID_ANY, label);
+        l->SetForegroundColour(pal.value);
+        grid->Add(l, 0, wxALIGN_CENTER_VERTICAL);
         grid->Add(ctrl, 1, wxEXPAND);
     };
 
     std::string init_url;
     if (auto* ac = wxGetApp().app_config) init_url = ac->get("farm", "url");
     if (init_url.empty()) init_url = kDefaultFarmUrl;
-    m_farm_url = new wxTextCtrl(this, wxID_ANY, wxString::FromUTF8(init_url), wxDefaultPosition, wxSize(24 * em, -1));
+    m_farm_url = new wxTextCtrl(card, wxID_ANY, wxString::FromUTF8(init_url), wxDefaultPosition, wxSize(24 * em, -1));
     m_farm_url->SetHint(wxString::FromUTF8(kDefaultFarmUrl));
     add_row(_L("Farm"), m_farm_url);
 
-    m_part_number = new wxTextCtrl(this, wxID_ANY, "", wxDefaultPosition, wxSize(24 * em, -1));
+    m_part_number = new wxTextCtrl(card, wxID_ANY, "", wxDefaultPosition, wxSize(24 * em, -1));
     m_part_number->SetHint(_L("e.g. GMR-C-00069 (blank = auto)"));
     add_row(_L("Part number"), m_part_number);
 
-    m_name = new wxTextCtrl(this, wxID_ANY);
+    m_name = new wxTextCtrl(card, wxID_ANY);
     m_name->SetHint(_L("Name for a new part (optional)"));
     add_row(_L("Name"), m_name);
 
-    m_rev = new wxTextCtrl(this, wxID_ANY, "auto");
+    m_rev = new wxTextCtrl(card, wxID_ANY, "auto");
     add_row(_L("Revision"), m_rev);
 
-    m_printer = new wxChoice(this, wxID_ANY);
+    m_printer = new wxChoice(card, wxID_ANY);
     add_row(_L("Printer"), m_printer);
 
-    root->Add(grid, 0, wxEXPAND | wxALL, em);
+    // Order reference: EITHER a free-text order number OR an open works order (mutually
+    // exclusive — picking a works order disables the text field; a WO carries its own order ref).
+    m_order_number = new wxTextCtrl(card, wxID_ANY);
+    m_order_number->SetHint(_L("Customer order / PO (optional)"));
+    add_row(_L("Order number"), m_order_number);
+
+    m_works_order = new wxChoice(card, wxID_ANY);
+    m_works_order->Append(_L("— none —"));   // index 0 = no works order
+    m_works_order_ids.push_back(0);
+    m_works_order->SetSelection(0);
+    add_row(_L("Works order"), m_works_order);
+
+    cardv->Add(grid, 0, wxEXPAND | wxALL, pad);
+
+    // Notes for this revision — free text stored against the revision in the farm,
+    // visible/editable later on the part's revisions table (e.g. what changed in this
+    // rev, settings that worked, gotchas).
+    auto* notes_lbl = new wxStaticText(card, wxID_ANY, _L("Notes for this revision"));
+    notes_lbl->SetForegroundColour(pal.value);
+    cardv->Add(notes_lbl, 0, wxLEFT | wxRIGHT, pad);
+    m_notes = new wxTextCtrl(card, wxID_ANY, "", wxDefaultPosition, wxSize(-1, FromDIP(52)), wxTE_MULTILINE);
+    m_notes->SetHint(_L("What changed in this revision, settings that worked, gotchas… (optional)"));
+    cardv->Add(m_notes, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, pad);
 
     // Which machine this plate was sliced for — filters the printer list below.
-    m_compat = new wxStaticText(this, wxID_ANY, "");
-    m_compat->SetForegroundColour(wxColour(120, 120, 120));
-    root->Add(m_compat, 0, wxLEFT | wxRIGHT | wxBOTTOM, em);
+    m_compat = new wxStaticText(card, wxID_ANY, "");
+    m_compat->SetForegroundColour(pal.muted);
+    cardv->Add(m_compat, 0, wxLEFT | wxRIGHT | wxBOTTOM, pad);
 
     // Sign-in row: status text + a Sign in / Sign out button.
     auto* auth = new wxBoxSizer(wxHORIZONTAL);
-    m_auth_status = new wxStaticText(this, wxID_ANY, "");
-    m_auth_btn    = new wxButton(this, wxID_ANY, _L("Sign in"));
+    m_auth_status = new wxStaticText(card, wxID_ANY, "");
+    m_auth_status->SetForegroundColour(pal.muted);
+    m_auth_btn = new Button(card, _L("Sign in"));
+    style_button(m_auth_btn, pal.card, pal.accent_soft, pal.muted, pal.value, false);
     auth->Add(m_auth_status, 1, wxALIGN_CENTER_VERTICAL);
     auth->Add(m_auth_btn, 0);
-    root->Add(auth, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, em);
+    cardv->Add(auth, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, pad);
 
-    m_lookup = new wxStaticText(this, wxID_ANY, "");
-    m_lookup->SetForegroundColour(wxColour(120, 120, 120));
-    root->Add(m_lookup, 0, wxLEFT | wxRIGHT | wxBOTTOM, em);
+    m_lookup = new wxStaticText(card, wxID_ANY, "");
+    m_lookup->SetForegroundColour(pal.muted);
+    cardv->Add(m_lookup, 0, wxLEFT | wxRIGHT | wxBOTTOM, pad);
 
-    m_queue = new wxCheckBox(this, wxID_ANY, _L("Queue on the selected printer after upload"));
-    root->Add(m_queue, 0, wxLEFT | wxRIGHT | wxBOTTOM, em);
+    m_queue = new wxCheckBox(card, wxID_ANY, _L("Queue after upload (on the chosen printer, or the auto-queue)"));
+    m_queue->SetForegroundColour(pal.value);
+    cardv->Add(m_queue, 0, wxLEFT | wxRIGHT | wxBOTTOM, pad);
 
-    m_status = new wxStaticText(this, wxID_ANY, "");
-    root->Add(m_status, 0, wxLEFT | wxRIGHT, em);
+    m_status = new wxStaticText(card, wxID_ANY, "");
+    m_status->SetForegroundColour(pal.value);
+    cardv->Add(m_status, 0, wxLEFT | wxRIGHT | wxBOTTOM, pad);
 
+    card->SetSizer(cardv);
+    root->Add(card, 0, wxEXPAND | wxLEFT | wxRIGHT, pad);
+
+    // --- actions ---
     auto* btns = new wxBoxSizer(wxHORIZONTAL);
     btns->AddStretchSpacer(1);
-    auto* cancel = new wxButton(this, wxID_CANCEL, _L("Close"));
-    m_send = new wxButton(this, wxID_ANY, _L("Send to Farm"));
-    btns->Add(cancel, 0, wxRIGHT, em / 2);
+    auto* cancel = new Button(this, _L("Close"), wxEmptyString, 0, 0, wxID_CANCEL);
+    style_button(cancel, pal.card, pal.accent_soft, pal.muted, pal.value, false);
+    cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (IsModal()) EndModal(wxID_CANCEL); else Close(); });
+    m_send = new Button(this, _L("Send to Farm"));
+    style_button(m_send, pal.accent, pal.accent_hover, pal.accent, pal.on_accent, true);
+    btns->Add(cancel, 0, wxRIGHT, pad / 2);
     btns->Add(m_send, 0);
-    root->Add(btns, 0, wxEXPAND | wxALL, em);
+    root->Add(btns, 0, wxEXPAND | wxALL, pad);
 
     SetSizerAndFit(root);
     CenterOnParent();
 
     m_send->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { do_send(); });
+    // Either/or: selecting a works order clears + disables the free-text order number.
+    m_works_order->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) {
+        const bool wo = m_works_order->GetSelection() > 0;
+        if (wo) m_order_number->SetValue("");
+        m_order_number->Enable(!wo);
+    });
     m_part_number->Bind(wxEVT_KILL_FOCUS, [this](wxFocusEvent& e) { lookup_part(); e.Skip(); });
     m_part_number->Bind(wxEVT_TEXT_ENTER, [this](wxCommandEvent&) { lookup_part(); });
     m_farm_url->Bind(wxEVT_KILL_FOCUS, [this](wxFocusEvent& e) {
@@ -153,6 +257,7 @@ SendToFarmDialog::SendToFarmDialog(wxWindow* parent)
     detect_slice_machine();    // know the plate's machine kind so we can filter the printer list
     load_opened_context();     // prefill part number from the opened project (sidecar/filename)
     fetch_printers();
+    fetch_works_orders();
     if (!m_have_opened_pn)     // only peek an auto number when this isn't a save-back of a known part
         fetch_next_part_number();
 }
@@ -260,19 +365,23 @@ void SendToFarmDialog::fetch_printers()
                                                        [](const P& p) { return !p.kind.empty(); });
                 const bool filtering = farm_has_kind && !m_slice_kind.empty();
                 m_printer->Clear(); m_printer_ids.clear();
-                int hidden = 0;
+                // Auto-queue first (id 0 = POOL_PRINTER_ID): the farm holds the job for the next
+                // free printer whose machine kind + loaded filament match this slice, so it's
+                // always offerable regardless of which specific printers are online right now.
+                m_printer->Append(_L("Auto-queue — next free compatible printer")); m_printer_ids.push_back(0);
+                int hidden = 0, shown = 0;
                 for (const P& p : printers) {
                     if (filtering && !p.kind.empty() && p.kind != m_slice_kind) { ++hidden; continue; }
-                    m_printer->Append(wxString::FromUTF8(p.name)); m_printer_ids.push_back(p.id);
+                    m_printer->Append(wxString::FromUTF8(p.name)); m_printer_ids.push_back(p.id); ++shown;
                 }
-                if (!m_printer_ids.empty()) m_printer->SetSelection(0);
+                m_printer->SetSelection(0);   // default to the auto-queue
                 if (m_compat != nullptr) {
                     const wxString mach = wxString::FromUTF8(m_slice_model.empty() ? m_slice_kind : m_slice_model);
                     if (!filtering) {
                         m_compat->SetLabel("");
-                    } else if (m_printer_ids.empty()) {
+                    } else if (shown == 0) {
                         m_compat->SetForegroundColour(wxColour(180, 60, 50));
-                        m_compat->SetLabel(wxString::Format(_L("Sliced for %s — no matching printer on the farm."), mach));
+                        m_compat->SetLabel(wxString::Format(_L("Sliced for %s — no matching printer online; the auto-queue will hold it for the next compatible one."), mach));
                     } else {
                         m_compat->SetForegroundColour(wxColour(120, 120, 120));
                         wxString lbl = wxString::Format(_L("Sliced for %s — showing compatible printers"), mach);
@@ -291,6 +400,47 @@ void SendToFarmDialog::fetch_printers()
                 m_status->SetLabel(_L("Couldn't reach the farm at ") + farm_url() + " — is it running?");
                 Layout();
             });
+        })
+        .perform();
+}
+
+void SendToFarmDialog::fetch_works_orders()
+{
+    auto http = Http::get(farm_url() + "/api/slicer/works-orders");
+    add_token(http, farm_token());
+    http.timeout_connect(3).timeout_max(6)
+        .on_complete([this, alive = m_alive](std::string body, unsigned status) {
+            if (status != 200) return;   // older farm without works orders -> dropdown stays "— none —"
+            struct WO { int id; std::string number, customer, assembly; };
+            std::vector<WO> wos;
+            try {
+                json arr = json::parse(body);
+                for (auto& w : arr)
+                    wos.push_back({ w.value("id", 0), w.value("number", std::string()),
+                                    w.value("customer_order", std::string()),
+                                    w.value("assembly", std::string()) });
+            } catch (...) { return; }
+            wxGetApp().CallAfter([this, alive, wos]() {
+                if (!*alive || m_works_order == nullptr) return;
+                m_works_order->Clear(); m_works_order_ids.clear();
+                m_works_order->Append(_L("— none —")); m_works_order_ids.push_back(0);
+                for (const WO& w : wos) {
+                    wxString label = wxString::FromUTF8(w.number);
+                    // Build separators in the std::string (UTF-8) domain, then FromUTF8 once — a bare
+                    // " — " char* literal would be decoded via the CP1252 locale and render as mojibake
+                    // ("â€"") on Windows. \xE2\x80\x94 is the em dash, spelled in explicit UTF-8 bytes so
+                    // it doesn't depend on this file's on-disk encoding.
+                    if (!w.customer.empty())      label += wxString::FromUTF8(" \xE2\x80\x94 " + w.customer);
+                    else if (!w.assembly.empty()) label += wxString::FromUTF8(" (" + w.assembly + ")");
+                    m_works_order->Append(label); m_works_order_ids.push_back(w.id);
+                }
+                m_works_order->SetSelection(0);
+                Layout();
+            });
+        })
+        .on_error([this, alive = m_alive](std::string, std::string, unsigned status) {
+            if (status != 401) return;
+            wxGetApp().CallAfter([this, alive]() { if (*alive) handle_unauthorized(); });
         })
         .perform();
 }
@@ -540,6 +690,7 @@ void SendToFarmDialog::do_send()
     const std::string name  = m_name->GetValue().Trim().Trim(false).ToStdString();
     const std::string rev   = m_rev->GetValue().Trim().Trim(false).ToStdString();
     const bool        queue = m_queue->IsChecked();
+    const std::string notes = m_notes ? m_notes->GetValue().Trim().Trim(false).ToStdString() : std::string();
     int printer_id = -1;
     if (int sel = m_printer->GetSelection(); sel != wxNOT_FOUND && sel < (int)m_printer_ids.size())
         printer_id = m_printer_ids[sel];
@@ -564,12 +715,26 @@ void SendToFarmDialog::do_send()
     http.form_add("part_number", pn)
         .form_add("name", name)
         .form_add("rev_label", rev.empty() ? "auto" : rev)
+        .form_add("notes", notes)
         .form_add("queue", queue ? "1" : "0");
     if (printer_id >= 0) http.form_add("printer_id", std::to_string(printer_id));
+    // Order reference: a works order (dropdown) wins over a free-text order number — they're
+    // mutually exclusive in the UI. Only recorded when the job is queued.
+    int works_order_id = 0;
+    if (int wsel = m_works_order ? m_works_order->GetSelection() : wxNOT_FOUND;
+        wsel != wxNOT_FOUND && wsel < (int)m_works_order_ids.size())
+        works_order_id = m_works_order_ids[wsel];
+    if (works_order_id > 0) {
+        http.form_add("works_order_id", std::to_string(works_order_id));
+    } else {
+        const std::string order_no = m_order_number
+            ? m_order_number->GetValue().Trim().Trim(false).ToStdString() : std::string();
+        if (!order_no.empty()) http.form_add("order_number", order_no);
+    }
     http.form_add_file("gcode_file", printable_path, gcode_name);
     if (have_3mf) http.form_add_file("model_file", tmp_3mf, model_name);
 
-    http.on_complete([this, alive = m_alive](std::string body, unsigned status) {
+    http.on_complete([this, alive = m_alive, have_3mf](std::string body, unsigned status) {
             std::string msg = "Sent to the farm.";
             std::string assigned_pn;
             try {
@@ -577,7 +742,7 @@ void SendToFarmDialog::do_send()
                 if (j.contains("message")) msg = j["message"].get<std::string>();
                 assigned_pn = j.value("part_number", std::string());
             } catch (...) {}
-            wxGetApp().CallAfter([this, alive, msg, assigned_pn]() {
+            wxGetApp().CallAfter([this, alive, msg, assigned_pn, have_3mf]() {
               if (!*alive) return;
               try {
                 // The farm is authoritative for the part number (e.g. if it was auto).
@@ -591,6 +756,13 @@ void SendToFarmDialog::do_send()
                 // ATN: record this dispatched job in the assistant's learning diary.
                 if (Plater* plater = wxGetApp().plater())
                     plater->notify_atn_sent_to_farm();
+                // The revision (including the editable project 3MF) is now stored in the
+                // farm, so the local project is effectively saved — clear the "unsaved"
+                // state so closing won't warn. Only when we actually uploaded the model.
+                if (have_3mf) {
+                    if (Plater* plater = wxGetApp().plater())
+                        plater->reset_project_dirty_after_save();
+                }
               } catch (const std::exception& e) {
                 BOOST_LOG_TRIVIAL(error) << "ATN SendToFarm post-upload UI update threw: " << e.what();
                 if (m_send) m_send->Enable();

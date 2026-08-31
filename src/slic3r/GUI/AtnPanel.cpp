@@ -2,6 +2,7 @@
 
 #include "GUI.hpp"
 #include "GUI_App.hpp"
+#include "SendToFarmDialog.hpp"   // "Connect your farm account" reuses the dialog's browser sign-in
 #include "GLCanvas3D.hpp"
 #include "Camera.hpp"
 #include "MainFrame.hpp"
@@ -10,6 +11,7 @@
 #include "Tab.hpp"
 #include "Widgets/WebView.hpp"
 #include "libslic3r/Model.hpp"
+#include "libslic3r/calib.hpp"          // Calib_Params / CalibMode for the Calibrate wizard
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/Layer.hpp"
@@ -128,6 +130,22 @@ void AtnPanel::on_slice_complete()
     send_fea_mesh();   // stage the plate's model mesh for the hybrid FEA view
     json msg;
     msg["command"] = "atn_slice_complete";
+    send_to_page(msg.dump());
+}
+
+void AtnPanel::send_farm_status()
+{
+    // Read the persisted cloud-farm session (written by SendToFarmDialog's sign-in). The panel
+    // uses this to show "Connect your farm account" vs "Farm: <account>".
+    std::string token, account;
+    if (auto* ac = wxGetApp().app_config) {
+        token   = ac->get("farm", "token");
+        account = ac->get("farm", "account");
+    }
+    json msg;
+    msg["command"] = "atn_farm_status";
+    msg["data"]["connected"] = !token.empty();
+    msg["data"]["account"]   = account;
     send_to_page(msg.dump());
 }
 
@@ -260,8 +278,77 @@ void AtnPanel::on_script_message(wxWebViewEvent& evt)
             // Re-slice on demand (e.g. the panel's "re-slice & re-check" button
             // after the user applied a recommendation). A successful slice fires
             // on_slice_complete(), which tells the page to re-run pre-flight.
-            if (auto* p = wxGetApp().plater())
+            if (auto* p = wxGetApp().plater()) {
                 p->reslice();
+                // No-op guard: if the user reverted a setting the plate is already up-to-date, so
+                // reslice() runs nothing and fires no SLICING_COMPLETED -> the page would sit on the
+                // previous slice's result. Once the event loop has settled, if no slice is actually
+                // running, tell the page anyway so it refreshes the CURRENT slice. (A real slice IS
+                // running here, so we skip -- its own completion fires on_slice_complete().)
+                wxGetApp().CallAfter([this]() {
+                    if (auto* pl = wxGetApp().plater(); pl && !pl->is_background_process_slicing())
+                        on_slice_complete();
+                });
+            }
+        } else if (command == "atn_calibrate_start") {
+            // ATN Calibrate wizard: generate + slice one of the built-in calibration
+            // test plates (temp / flow / PA / retraction / max-vol), mirroring the
+            // Calibration-menu dialogs, then reslice() so the user gets a ready-to-
+            // print plate. Like the menu, calib_* wipes the current plate (new_project).
+            Plater* p = wxGetApp().plater();
+            if (p != nullptr && root.contains("data")) {
+                const json&  d    = root["data"];
+                const std::string test = d.value("test", std::string());
+                Calib_Params params;
+                params.print_numbers = false;   // Calib_Params leaves this uninitialised
+                bool ok = true;
+                if (test == "temp") {
+                    params.mode  = CalibMode::Calib_Temp_Tower;
+                    params.start = d.value("start", 230.0);
+                    params.end   = d.value("end",   190.0);
+                    params.step  = d.value("step",    5.0);
+                    p->calib_temp(params);
+                } else if (test == "flow") {
+                    p->calib_flowrate(true, 1);   // "YOLO (Recommended)" linear flow (default pattern)
+                } else if (test == "pa") {
+                    params.mode  = CalibMode::Calib_PA_Tower;
+                    params.start = d.value("start", 0.0);
+                    params.end   = d.value("end",   0.1);
+                    params.step  = d.value("step",  0.002);
+                    p->calib_pa(params);
+                } else if (test == "retract") {
+                    params.mode  = CalibMode::Calib_Retraction_tower;
+                    params.start = d.value("start", 0.0);
+                    params.end   = d.value("end",   2.0);
+                    params.step  = d.value("step",  0.1);
+                    p->calib_retraction(params);
+                } else if (test == "maxvol") {
+                    params.mode  = CalibMode::Calib_Vol_speed_Tower;
+                    params.start = d.value("start", 5.0);
+                    params.end   = d.value("end",  20.0);
+                    params.step  = d.value("step",  0.5);
+                    p->calib_max_vol_speed(params);
+                } else {
+                    ok = false;
+                }
+                if (ok)
+                    p->reslice();   // slice the calibration plate so it's ready to print
+                json reply;
+                reply["command"]      = "atn_calibrate_started";
+                reply["data"]["test"] = test;
+                reply["data"]["ok"]   = ok;
+                send_to_page(reply.dump());
+            }
+        } else if (command == "atn_farm_signin") {
+            // Panel "Connect your farm account": open the Send-to-Farm dialog so the user can sign
+            // in BEFORE the Send-to-Farm button is visible (it's gated on farm config -> chicken-and-
+            // egg for a brand-new cloud customer). The dialog's own browser sign-in saves the token;
+            // once saved, atn_farm_available() is true and the button appears on the next print-
+            // dropdown open. Reuses everything, no plate required to open.
+            SendToFarmDialog(wxGetApp().mainframe).ShowModal();
+            send_farm_status();   // reflect the (possibly new) connection state in the panel
+        } else if (command == "atn_get_farm_status") {
+            send_farm_status();
         } else if (command == "atn_capture_model") {
             handle_capture_model();
         } else if (command == "atn_apply_optimized") {
@@ -696,8 +783,10 @@ void AtnPanel::handle_request_preflight()
     // Generous cap: the gcode is deflate-compressed before crossing the bridge
     // (gcode is ~10x compressible), so even large manifolds stay small. The
     // server independently skips its geometry walk above ~50 MB decompressed.
+    // Ceiling is really the webview bridge (the compressed gcode rides in one
+    // postMessage), not this number — past ~500 MB raw, use the web tool.
     const std::uintmax_t size = boost::filesystem::file_size(path);
-    if (size > 250ull * 1024 * 1024) {
+    if (size > 500ull * 1024 * 1024) {
         reply["data"]["ok"]      = false;
         reply["data"]["message"] = "This G-code is too large for the in-app pre-flight; use the askthenozzle.com tool instead.";
         send_to_page(reply.dump());
@@ -759,17 +848,28 @@ void AtnPanel::handle_apply_optimized(const std::string& b64, size_t raw_size)
     }
     raw.resize(out_len);
 
-    // Overwrite the plate's gcode file, then re-process it into the preview
-    // (no re-slice). Export / send-to-printer then use the optimized bytes.
-    const std::string path = plate->get_tmp_gcode_path();
-    try {
-        boost::nowide::ofstream out(path, std::ios::binary);
+    // The plate's own sliced g-code file is held OPEN (locked) by the loaded preview, so overwriting
+    // it silently fails on Windows -- boost::nowide::ofstream sets failbit rather than throwing, so
+    // the old code "succeeded" while writing nothing, and the reprocess re-read the ORIGINAL (Apply
+    // looked like a no-op). Write the corrected g-code to a FRESH sibling file instead, verify it
+    // landed, and point the plate at that. A unique name per apply avoids re-hitting the lock on the
+    // file we just wrote (the preview now holds THAT one).
+    static int s_opt_seq = 0;
+    boost::filesystem::path base(plate->get_tmp_gcode_path());
+    boost::filesystem::path newpath =
+        base.parent_path() / (base.stem().string() + ".atn_opt" + std::to_string(++s_opt_seq) + ".gcode");
+    {
+        boost::nowide::ofstream out(newpath.string(), std::ios::binary | std::ios::trunc);
         out.write(reinterpret_cast<const char*>(raw.data()), raw.size());
-    } catch (const std::exception& e) {
-        reply["data"]["ok"]      = false;
-        reply["data"]["message"] = std::string("Could not write gcode: ") + e.what();
-        send_to_page(reply.dump());
-        return;
+        out.flush();
+        const bool wrote = out.good();
+        out.close();
+        if (!wrote) {
+            reply["data"]["ok"]      = false;
+            reply["data"]["message"] = "Could not write the optimised g-code to disk.";
+            send_to_page(reply.dump());
+            return;
+        }
     }
 
     // Read the estimated print time before/after the reprocess so the panel can
@@ -781,7 +881,7 @@ void AtnPanel::handle_apply_optimized(const std::string& b64, size_t raw_size)
                  : 0.0f;
     };
     const float before_s = normal_time_s();
-    const bool  ok       = plater->apply_optimized_gcode();
+    const bool  ok       = plater->apply_optimized_gcode(newpath.string());
     const float after_s  = normal_time_s();
 
     reply["data"]["ok"]       = ok;

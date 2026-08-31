@@ -100,6 +100,7 @@ private:
     wxAuiToolBarItem* m_undo_item;
     wxAuiToolBarItem* m_redo_item;
     wxAuiToolBarItem* m_calib_item;
+    wxAuiToolBarItem* m_farm_item{ nullptr };   // ATN: opens the printer-farm dashboard window
     wxAuiToolBarItem* maximize_btn;
 
     wxBitmap m_publish_bitmap;

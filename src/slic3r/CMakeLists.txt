@@ -748,6 +748,7 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/GeneratedConfig.hpp.in
 # public installer serves everyone and the option only surfaces once a farm/agent is set up. The
 # interface-fan + slicing features always ship regardless.
 list(APPEND SLIC3R_GUI_SOURCES GUI/SendToFarmDialog.cpp GUI/SendToFarmDialog.hpp)
+list(APPEND SLIC3R_GUI_SOURCES GUI/ReportProblemDialog.cpp GUI/ReportProblemDialog.hpp)
 
 # ATN: show the Woven walls / Brick layers UI. OFF for public installers (the
 # feature is still being tuned on complex geometry); dev/test builds pass

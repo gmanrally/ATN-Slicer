@@ -363,6 +363,7 @@ public:
 
     //SoftFever
     void show_device(bool bBBLPrinter);
+    void show_farm_window();   // ATN: open the printer-farm dashboard in its own window
     void fit_tab_labels(); // ORCA
 
     PA_Calibration_Dlg* m_pa_calib_dlg{ nullptr };
@@ -387,6 +388,7 @@ public:
     ProjectPanel*         m_project{ nullptr };
 
     CalibrationPanel*     m_calibration{ nullptr };
+    wxFrame*              m_farm_window{ nullptr };   // ATN: printer-farm dashboard, its own window (top-bar "Farm" button)
     WebViewPanel*         m_webview { nullptr };
     PrinterWebView*       m_printer_view{nullptr};
     wxLogWindow*          m_log_window { nullptr };

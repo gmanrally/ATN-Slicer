@@ -49,6 +49,15 @@ struct FlashforgeStatus
     double      bed_target {-1.0};     // platTargetTemp
     double      chamber_temp {-1.0};   // chamberTemp
     double      est_time_s {-1.0};     // estimatedTime (seconds)
+
+    // Live-control readbacks (newer firmware only; best-effort -- a sentinel means the printer did not
+    // report that field, and the Device panel falls back to the last value the user set instead).
+    int         speed_pct {-1};        // current feed-rate override %, if reported
+    double      z_comp {-1000.0};      // live Z compensation (mm); -1000 = unknown
+    int         light_on {-1};         // chamber light: 1 on / 0 off / -1 unknown
+    int         internal_fan {-1};     // internal circulation: 1 on / 0 off / -1 unknown
+    int         external_fan {-1};     // external circulation: 1 on / 0 off / -1 unknown
+    std::string material;              // right-extruder filament type, if reported
 };
 
 class Flashforge : public PrintHost
@@ -74,7 +83,23 @@ public:
     bool                       fetch_status(FlashforgeStatus& out, wxString& msg) const;
     static bool                discover_printers(std::vector<FlashforgeDiscoveredPrinter>& printers, wxString& msg, int timeout_ms = 10000, int idle_timeout_ms = 1500, int max_retries = 3);
 
+    // --- LAN control (port 8898, POST /control) --------------------------------------------------
+    // Write commands the native Device panel drives. Each is blocking (perform_sync) -- call OFF the
+    // GUI thread. Returns false + fills msg on any transport/auth/err failure. The command shapes
+    // follow the documented FlashForge local API (Parallel-7/flashforge-api-docs); they are NOT
+    // verified against on-bench hardware here (we have none), so treat as best-effort until the first
+    // run against a real Adventurer 5M / AD5X.
+    static constexpr double    TEMP_LEAVE = -200.0;   // sentinel: "leave this temperature channel unchanged"
+
+    bool                       job_control(const std::string& action, wxString& msg) const;                     // "pause" | "continue" | "cancel"
+    bool                       set_temperatures(double nozzle_c, double bed_c, double chamber_c, wxString& msg) const; // TEMP_LEAVE keeps a channel
+    bool                       set_speed(int percent, wxString& msg) const;                                      // feed-rate override %
+    bool                       set_z_compensation(double mm, wxString& msg) const;                               // live Z offset, -5..+5 mm
+    bool                       set_light(bool on, wxString& msg) const;                                          // chamber LED
+    bool                       set_circulation(int internal_on, int external_on, wxString& msg) const;           // 1 on / 0 off / <0 leave (5M Pro)
+
 private:
+    bool                       send_control(const std::string& cmd, const std::string& args_json, wxString& msg) const;
     std::string m_host;
     std::string m_serial_number;
     std::string m_check_code;

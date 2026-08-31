@@ -15897,7 +15897,7 @@ bool Plater::is_multi_extruder_ams_empty()
 }
 
 //BBS: add multiple plate reslice logic
-bool Plater::apply_optimized_gcode()
+bool Plater::apply_optimized_gcode(const std::string& gcode_path)
 {
     PartPlate* plate = p->partplate_list.get_curr_plate();
     if (plate == nullptr || !plate->is_slice_result_valid())
@@ -15907,9 +15907,12 @@ bool Plater::apply_optimized_gcode()
     if (print == nullptr || result == nullptr)
         return false;
     try {
-        // Re-run only the gcode processor on the (modified) file — NOT Print::process,
-        // so the externally optimized gcode is kept rather than re-sliced away.
-        print->export_gcode_from_previous_file(plate->get_tmp_gcode_path(), result, nullptr);
+        // Re-run only the gcode processor on the corrected file — NOT Print::process, so the
+        // externally optimized gcode is kept rather than re-sliced away. gcode_path is a FRESH file
+        // written by the caller (the plate's own slice file is held open/locked by the preview, so
+        // it can't be overwritten). process_file() sets result->filename to gcode_path, so the
+        // viewer + Send-to-Farm then read the corrected bytes.
+        print->export_gcode_from_previous_file(gcode_path, result, nullptr);
         p->preview->update_gcode_result(result);
         // Drop the gcode viewer's cached toolpaths so the re-processed result is
         // fully rebuilt (legend time + speed colours). Otherwise the same-id
@@ -15917,10 +15920,18 @@ bool Plater::apply_optimized_gcode()
         // colours and returns, leaving the displayed time and paths frozen.
         if (p->preview->get_canvas3d())
             p->preview->get_canvas3d()->reset_gcode_toolpaths();
-        // only_gcode=true: load the gcode preview straight from the (updated)
-        // result, bypassing the is_slice_result_valid() gate in load_print_as_fff
-        // so the optimized gcode actually re-renders.
-        p->preview->reload_print(true);
+        // Reflect the corrected g-code in the preview. reload_print() only reloads while the
+        // preview is the ACTIVE view -- load_print_as_fff early-returns when it's hidden -- so
+        // applying from the editor (where the ATN panel lives) left the g-code viewer's legend
+        // TIME and toolpaths frozen on the original slice even though the plate's result was
+        // updated. Switch to the preview to force the reload; no_slice=true so it does NOT reslice
+        // (a reslice would regenerate the g-code and discard what we just applied). If the preview
+        // is already the active view, reload it in place (only_gcode=true bypasses the
+        // is_slice_result_valid gate so the optimized gcode re-renders).
+        if (p->is_preview_shown())
+            p->preview->reload_print(true);
+        else
+            select_view_3D("Preview", true);
     } catch (const std::exception& e) {
         BOOST_LOG_TRIVIAL(error) << "reload_gcode_from_disk failed: " << e.what();
         return false;

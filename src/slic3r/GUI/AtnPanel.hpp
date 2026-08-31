@@ -32,6 +32,9 @@ public:
 private:
     void on_script_message(wxWebViewEvent& evt);
     void send_to_page(const std::string& json_payload);
+    // Push the farm connection state (connected? + account) to the page so it can show/hide the
+    // "Connect your farm account" action and reflect who's linked.
+    void send_farm_status();
 
     std::string build_context_json() const;
     void        handle_highlight_setting(const std::string& key);

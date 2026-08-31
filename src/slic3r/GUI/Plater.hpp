@@ -508,9 +508,10 @@ public:
     // ATN: notify the docked assistant panel that a job was dispatched to the farm
     // (Send to Farm) so its learning diary records the print.
     void notify_atn_sent_to_farm();
-    // ATN: re-process the current plate's (externally modified) gcode file into
-    // the preview without re-slicing, so an optimized gcode becomes what prints.
-    bool apply_optimized_gcode();
+    // ATN: re-process a corrected gcode file (written fresh by the caller, since the plate's own
+    // slice file is locked by the open preview) into the preview without re-slicing, so an optimized
+    // gcode becomes what prints.
+    bool apply_optimized_gcode(const std::string& gcode_path);
     void record_slice_preset(std::string action);
     void reslice_SLA_supports(const ModelObject &object, bool postpone_error_messages = false);
     void reslice_SLA_hollowing(const ModelObject &object, bool postpone_error_messages = false);

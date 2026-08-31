@@ -630,8 +630,74 @@ bool Flashforge::fetch_status(FlashforgeStatus& out, wxString& msg) const
     num("chamberTemp",     out.chamber_temp);
     num("estimatedTime",   out.est_time_s);
 
+    // Best-effort live-control readbacks. Field names follow the documented detail payload; any that a
+    // given firmware omits simply leave the sentinel, and the panel keeps the last user-set value.
+    integer("printSpeedAdjust", out.speed_pct);
+    if (d.contains("zAxisCompensation")) try_parse_json_double(d["zAxisCompensation"], out.z_comp);
+    { const std::string v = str("lightStatus");       if (!v.empty()) out.light_on     = (v == "open") ? 1 : 0; }
+    { const std::string v = str("internalFanStatus"); if (!v.empty()) out.internal_fan = (v == "open") ? 1 : 0; }
+    { const std::string v = str("externalFanStatus"); if (!v.empty()) out.external_fan = (v == "open") ? 1 : 0; }
+    out.material = str("rightFilamentType");
+
     out.valid = true;
     return true;
+}
+
+bool Flashforge::send_control(const std::string& cmd, const std::string& args_json, wxString& msg) const
+{
+    if (m_serial_number.empty() || m_check_code.empty()) {
+        msg = _(L("Flashforge local API requires both serial number and access code."));
+        return false;
+    }
+    json args = json::parse(args_json, nullptr, false);
+    if (args.is_discarded())
+        args = json::object();
+    const std::string body = json{
+        {"serialNumber", m_serial_number},
+        {"checkCode",    m_check_code},
+        {"payload",      {{"cmd", cmd}, {"args", std::move(args)}}},
+    }.dump();
+    // The FlashForge control shapes are documented but not hardware-verified across models, so
+    // log what we send (cmd + args, no credentials) — the printer's response is logged in
+    // request_local_api_json — to diagnose commands that are accepted-but-ignored (e.g. pause).
+    BOOST_LOG_TRIVIAL(info) << "[Flashforge] control cmd=" << cmd << " args=" << args_json;
+    std::string response;
+    return request_local_api_json("control", body, response, msg);
+}
+
+bool Flashforge::job_control(const std::string& action, wxString& msg) const
+{
+    return send_control("jobCtl_cmd", json{{"jobID", ""}, {"action", action}}.dump(), msg);
+}
+
+bool Flashforge::set_temperatures(double nozzle_c, double bed_c, double chamber_c, wxString& msg) const
+{
+    // TEMP_LEAVE (-200) tells the printer to keep a channel as-is; forward exactly what the caller passes.
+    return send_control("temperatureCtl_cmd",
+        json{{"rightNozzle", nozzle_c}, {"platform", bed_c}, {"chamber", chamber_c}}.dump(), msg);
+}
+
+bool Flashforge::set_speed(int percent, wxString& msg) const
+{
+    return send_control("printerCtl_cmd", json{{"speed", percent}}.dump(), msg);
+}
+
+bool Flashforge::set_z_compensation(double mm, wxString& msg) const
+{
+    return send_control("printerCtl_cmd", json{{"zAxisCompensation", mm}}.dump(), msg);
+}
+
+bool Flashforge::set_light(bool on, wxString& msg) const
+{
+    return send_control("lightControl_cmd", json{{"status", on ? "open" : "close"}}.dump(), msg);
+}
+
+bool Flashforge::set_circulation(int internal_on, int external_on, wxString& msg) const
+{
+    json a = json::object();
+    if (internal_on >= 0) a["internal"] = internal_on ? "open" : "close";
+    if (external_on >= 0) a["external"] = external_on ? "open" : "close";
+    return send_control("circulateCtl_cmd", a.dump(), msg);
 }
 
 bool Flashforge::upload_local_api(PrintHostUpload upload_data, ProgressFn progress_fn, ErrorFn error_fn) const
@@ -703,14 +769,21 @@ bool Flashforge::request_local_api_json(const std::string& path, const std::stri
     auto http = Http::post(make_http_url(path));
     http.header("Content-Type", "application/json")
         .set_post_body(body)
-        .on_complete([&](std::string body_text, unsigned) {
+        .on_complete([&](std::string body_text, unsigned status) {
             response_body = std::move(body_text);
+            // Log the printer's response so unverified command shapes can be diagnosed. Only /control
+            // (manual + rare) — /detail polls every few seconds and would flood the log, evicting the
+            // control lines we actually need. /detail failures are still logged in on_error below.
+            if (path == "control")
+                BOOST_LOG_TRIVIAL(info) << "[Flashforge] /control -> " << status << " " << response_body;
             if (!validate_local_api_response(response_body, error_msg))
                 ok = false;
         })
         .on_error([&](std::string body_text, std::string error, unsigned status) {
             response_body = std::move(body_text);
             error_msg     = format_error(response_body, error, status);
+            BOOST_LOG_TRIVIAL(info) << "[Flashforge] /" << path << " ERROR status=" << status
+                                    << " err=" << error << " resp=" << response_body;
             ok            = false;
         })
         .perform_sync();

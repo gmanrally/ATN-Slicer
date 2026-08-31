@@ -2,6 +2,7 @@
 
 #include <cstdlib>   // std::getenv (atn_farm_available)
 #include <wx/panel.h>
+#include <wx/button.h>   // ATN: farm-window nav bar buttons
 #include <wx/notebook.h>
 #include <wx/listbook.h>
 #include <wx/simplebook.h>
@@ -56,6 +57,7 @@
 #include "UnsavedChangesDialog.hpp"
 #include "MsgDialog.hpp"
 #include "SendToFarmDialog.hpp"
+#include "ReportProblemDialog.hpp"
 #include "Notebook.hpp"
 #include "GUI_Factories.hpp"
 #include "GUI_ObjectList.hpp"
@@ -97,6 +99,20 @@ static bool atn_farm_available()
     if (auto* ac = wxGetApp().app_config)
         return !ac->get("farm", "token").empty() || !ac->get("farm", "url").empty();
     return false;
+}
+
+// The farm dashboard URL to show in the Farm tab: FARM_URL dev override > a saved
+// farm URL (local agent / custom) > the hosted cloud farm.
+static std::string atn_farm_url()
+{
+    if (const char* env = std::getenv("FARM_URL"); env != nullptr && *env != 0)
+        return env;
+    if (auto* ac = wxGetApp().app_config) {
+        const std::string u = ac->get("farm", "url");
+        if (!u.empty())
+            return u;
+    }
+    return "https://farm.askthenozzle.com";
 }
 
 wxDEFINE_EVENT(EVT_SELECT_TAB, wxCommandEvent);
@@ -1369,6 +1385,9 @@ void MainFrame::init_tabpanel() {
     m_calibration->SetBackgroundColour(*wxWHITE);
     m_tabpanel->AddPage(m_calibration, _L("Calibration"), std::string("tab_calibration_active"), std::string("tab_calibration_active"), false);
 
+    // ATN: the printer-farm dashboard is NOT a workflow tab — it opens in its own
+    // window from the top-bar "Farm" button (see MainFrame::show_farm_window()).
+
     // Orca/ATN: the Ask The Nozzle assistant is now docked beside the scene in
     // the Prepare/Preview editor (see Plater), not a standalone tab.
 
@@ -1384,6 +1403,60 @@ void MainFrame::init_tabpanel() {
             m_plater->on_filament_count_change(full_config.option<ConfigOptionStrings>("filament_colour")->values.size());
         }
     }
+}
+
+// ATN: the printer-farm dashboard opens in its own resizable window, deliberately
+// kept out of the slicing workflow tabs. The window is a web view of the farm; the
+// farm itself shows the dashboard or an upgrade/sign-up according to the user's
+// subscription. Created on first open; if the user closes it, it's rebuilt next
+// time (the embedded browser keeps the farm session between opens).
+void MainFrame::show_farm_window()
+{
+    if (m_farm_window == nullptr) {
+        m_farm_window = new wxFrame(this, wxID_ANY, _L("Printer Farm"),
+                                    wxDefaultPosition, wxSize(FromDIP(1200), FromDIP(800)));
+        auto* sizer = new wxBoxSizer(wxVERTICAL);
+        if (auto* web = WebView::CreateWebView(m_farm_window, from_u8(atn_farm_url()))) {
+            // Browser-style nav bar — the farm is a web app, so give it the expected
+            // history controls (Back / Forward / Reload) plus Home inside the window.
+            auto* nav  = new wxBoxSizer(wxHORIZONTAL);
+            auto* back = new wxButton(m_farm_window, wxID_ANY, _L("Back"),    wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
+            auto* fwd  = new wxButton(m_farm_window, wxID_ANY, _L("Forward"), wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
+            auto* rel  = new wxButton(m_farm_window, wxID_ANY, _L("Reload"),  wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
+            auto* home = new wxButton(m_farm_window, wxID_ANY, _L("Home"),    wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
+            back->SetToolTip(_L("Go back"));      fwd->SetToolTip(_L("Go forward"));
+            rel->SetToolTip(_L("Reload"));        home->SetToolTip(_L("Farm dashboard home"));
+            back->Bind(wxEVT_BUTTON, [web](wxCommandEvent&) { if (web->CanGoBack())    web->GoBack(); });
+            fwd ->Bind(wxEVT_BUTTON, [web](wxCommandEvent&) { if (web->CanGoForward()) web->GoForward(); });
+            rel ->Bind(wxEVT_BUTTON, [web](wxCommandEvent&) { web->Reload(); });
+            const std::string home_url = atn_farm_url();
+            home->Bind(wxEVT_BUTTON, [web, home_url](wxCommandEvent&) { web->LoadURL(from_u8(home_url)); });
+            // Keep Back/Forward enabled state in step with the actual history.
+            auto sync_nav = [web, back, fwd]() { back->Enable(web->CanGoBack()); fwd->Enable(web->CanGoForward()); };
+            web->Bind(wxEVT_WEBVIEW_LOADED, [sync_nav](wxWebViewEvent& e) { sync_nav(); e.Skip(); });
+            back->Enable(false); fwd->Enable(false);
+            nav->Add(back, 0, wxRIGHT, FromDIP(2));
+            nav->Add(fwd,  0, wxRIGHT, FromDIP(2));
+            nav->Add(rel,  0, wxRIGHT, FromDIP(2));
+            nav->AddStretchSpacer(1);
+            nav->Add(home, 0);
+            sizer->Add(nav, 0, wxEXPAND | wxALL, FromDIP(4));
+
+            web->Bind(wxEVT_WEBVIEW_NEWWINDOW, [](wxWebViewEvent& evt) {
+                if (!evt.GetURL().empty())
+                    wxLaunchDefaultBrowser(evt.GetURL());
+            });
+            sizer->Add(web, wxSizerFlags().Expand().Proportion(1));
+        }
+        m_farm_window->SetSizer(sizer);
+        m_farm_window->Bind(wxEVT_CLOSE_WINDOW, [this](wxCloseEvent& e) {
+            m_farm_window = nullptr;   // allow a fresh window (and reload) next time
+            e.Skip();
+        });
+        m_farm_window->CentreOnParent();
+    }
+    m_farm_window->Show();
+    m_farm_window->Raise();
 }
 
 // SoftFever
@@ -2641,11 +2714,11 @@ static wxMenu* generate_help_menu()
         wxGetApp().plater()->get_current_canvas3D()->set_as_dirty();
         });
 
-    // Report a bug
-    //append_menu_item(helpMenu, wxID_ANY, _L("Report Bug(TODO)"), _L("Report a bug of OrcaSlicer"),
-    //    [](wxCommandEvent&) {
-    //        //TODO
-    //    });
+    // ATN: Report a problem — opens the native report dialog (emails us via the cloud).
+    append_menu_item(helpMenu, wxID_ANY, _L("Report a Problem…"), _L("Send us a problem report to investigate"),
+        [](wxCommandEvent&) {
+            ReportProblemDialog(wxGetApp().mainframe).ShowModal();
+        });
     // Check New Version
     append_menu_item(helpMenu, wxID_ANY, _L("Check for Updates"), _L("Check for Updates"),
         [](wxCommandEvent&) {
