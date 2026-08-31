@@ -2,6 +2,7 @@
 #include <queue>
 #include <set>
 #include <map>
+#include <algorithm>
 #include <cmath>
 #include <boost/multiprecision/cpp_int.hpp>
 
@@ -377,6 +378,33 @@ namespace Slic3r
         return m_solver->solve();
     }
 
+    // Reading a flush volume must never be able to crash the slice.
+    //
+    // The purge matrix is dimensioned in ToolOrdering::get_recommended_filament_maps
+    // from filament_colour.values.size(). A filament profile is free to omit
+    // filament_colour, in which case the engine default (a single entry) is
+    // used and the matrix is built 1x1 no matter how many filaments are
+    // loaded. Every index below is a filament id, so the first time a second
+    // filament is actually used on a layer -- supports assigned to the second
+    // nozzle, for instance -- wipe_volumes[1][...] reads off the end of a
+    // one-element vector and the process dies with SIGSEGV.
+    //
+    // The dimensioning is fixed at its source, but an out-of-range flush
+    // lookup should degrade rather than crash: fall back to the largest known
+    // volume, so an unknown pair is treated as expensive rather than free and
+    // the optimiser does not favour it.
+    static inline float flush_volume_at(const std::vector<std::vector<float>>& wipe_volumes,
+                                        size_t from, size_t to)
+    {
+        if (from < wipe_volumes.size() && to < wipe_volumes[from].size())
+            return wipe_volumes[from][to];
+        float worst = 0.f;
+        for (const auto& row : wipe_volumes)
+            for (float v : row)
+                worst = std::max(worst, v);
+        return worst;
+    }
+
     //solve the problem by searching the least flush of current filament
     static std::vector<unsigned int> solve_extruder_order_with_greedy(const std::vector<std::vector<float>>& wipe_volumes,
         const std::vector<unsigned int> curr_layer_extruders,
@@ -398,10 +426,11 @@ namespace Slic3r
             int target_cost = std::numeric_limits<int>::max();
             for (size_t k = 0; k < is_visited.size(); ++k) {
                 if (!is_visited[k]) {
-                    if (wipe_volumes[*prev_filament][curr_layer_extruders[k]] < target_cost ||
-                        (wipe_volumes[*prev_filament][curr_layer_extruders[k]] == target_cost && prev_filament == curr_layer_extruders[k])) {
+                    const float k_cost = flush_volume_at(wipe_volumes, *prev_filament, curr_layer_extruders[k]);
+                    if (k_cost < target_cost ||
+                        (k_cost == target_cost && prev_filament == curr_layer_extruders[k])) {
                         target_idx = k;
-                        target_cost = wipe_volumes[*prev_filament][curr_layer_extruders[k]];
+                        target_cost = k_cost;
                     }
                 }
             }
@@ -450,7 +479,7 @@ namespace Slic3r
             float curr_layer_cost = 0;
             for (size_t idx = 0; idx < curr_layer_extruders.size(); ++idx) {
                 if (prev_extruder_1)
-                    curr_layer_cost += wipe_volumes[*prev_extruder_1][curr_layer_extruders[idx]];
+                    curr_layer_cost += flush_volume_at(wipe_volumes, *prev_extruder_1, curr_layer_extruders[idx]);
                 prev_extruder_1 = curr_layer_extruders[idx];
             }
             if (curr_layer_cost > best_cost)
@@ -462,7 +491,7 @@ namespace Slic3r
 
                 for (size_t idx = 0; idx < next_layer_extruders.size(); ++idx) {
                     if (prev_extruder_2)
-                        total_cost += wipe_volumes[*prev_extruder_2][next_layer_extruders[idx]];
+                        total_cost += flush_volume_at(wipe_volumes, *prev_extruder_2, next_layer_extruders[idx]);
                     prev_extruder_2 = next_layer_extruders[idx];
                 }
 
@@ -479,7 +508,7 @@ namespace Slic3r
             std::optional<unsigned int>prev_extruder = start_extruder_id;
             for (size_t idx = 0; idx < best_seq.size(); ++idx) {
                 if (prev_extruder)
-                    real_cost += wipe_volumes[*prev_extruder][best_seq[idx]];
+                    real_cost += flush_volume_at(wipe_volumes, *prev_extruder, best_seq[idx]);
                 prev_extruder = best_seq[idx];
             }
             *min_cost = real_cost;
@@ -517,7 +546,7 @@ namespace Slic3r
                     if (state >> target & 1) {
                         for (unsigned int mid_point = 0; mid_point < all_extruders.size(); ++mid_point) {
                             if (state >> mid_point & 1) {
-                                auto tmp = cache[state - (1 << target)][mid_point] + wipe_volumes[all_extruders[mid_point]][all_extruders[target]];
+                                auto tmp = cache[state - (1 << target)][mid_point] + flush_volume_at(wipe_volumes, all_extruders[mid_point], all_extruders[target]);
                                 if (cache[state][target] > tmp) {
                                     cache[state][target] = tmp;
                                     prev[state][target] = mid_point;
@@ -588,7 +617,7 @@ namespace Slic3r
             if (cost) {
                 *cost = 0;
                 if (start_extruder_id)
-                    *cost = wipe_volumes[*start_extruder_id][curr_layer_extruders[0]];
+                    *cost = flush_volume_at(wipe_volumes, *start_extruder_id, curr_layer_extruders[0]);
             }
             return curr_layer_extruders;
         }

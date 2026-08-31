@@ -18,6 +18,7 @@
 #endif
 
 #include <cassert>
+#include <cmath>
 #include <limits>
 #include <algorithm>
 #include <unordered_map>
@@ -1111,16 +1112,38 @@ std::vector<int> ToolOrdering::get_recommended_filament_maps(const std::vector<s
         return std::vector<int>();
 
     const auto& print_config = print->config();
-    const unsigned int filament_nums = (unsigned int)(print_config.filament_colour.values.size() + EPSILON);
+    // filament_colour is only a PROXY for "how many filaments there are", and a
+    // filament profile may legitimately omit it -- the engine then falls back
+    // to its single-entry default and this matrix gets built 1x1 while several
+    // filaments are loaded. Every consumer indexes it by filament id, so that
+    // under-sizing is an out-of-bounds read waiting to happen (it segfaults in
+    // get_extruders_order the first time a second filament is used on a
+    // layer). Size it to cover every filament the layers actually use.
+    unsigned int filament_nums = (unsigned int)(print_config.filament_colour.values.size() + EPSILON);
+    for (const auto& lf : layer_filaments)
+        for (unsigned int f : lf)
+            filament_nums = std::max(filament_nums, f + 1);
 
     // get flush matrix
     std::vector<FlushMatrix> nozzle_flush_mtx;
     size_t extruder_nums = print_config.nozzle_diameter.values.size();
     for (size_t nozzle_id = 0; nozzle_id < extruder_nums; ++nozzle_id) {
         std::vector<float>              flush_matrix(cast<float>(get_flush_volumes_matrix(print_config.flush_volumes_matrix.values, nozzle_id, extruder_nums)));
+        // The stored matrix has its own dimension, which need not match the
+        // filament count; copy what it has and pad the rest with the largest
+        // known volume rather than slicing past its end.
+        const unsigned int stored_dim = (unsigned int)(std::sqrt((double)flush_matrix.size()) + EPSILON);
+        const float worst = flush_matrix.empty()
+            ? 0.f : *std::max_element(flush_matrix.begin(), flush_matrix.end());
         std::vector<std::vector<float>> wipe_volumes;
-        for (unsigned int i = 0; i < filament_nums; ++i)
-            wipe_volumes.push_back(std::vector<float>(flush_matrix.begin() + i * filament_nums, flush_matrix.begin() + (i + 1) * filament_nums));
+        for (unsigned int i = 0; i < filament_nums; ++i) {
+            std::vector<float> row(filament_nums, worst);
+            row[i] = 0.f;      // no purge to change to the filament already loaded
+            if (i < stored_dim)
+                for (unsigned int j = 0; j < std::min(filament_nums, stored_dim); ++j)
+                    row[j] = flush_matrix[i * stored_dim + j];
+            wipe_volumes.push_back(std::move(row));
+        }
 
         nozzle_flush_mtx.emplace_back(wipe_volumes);
     }
