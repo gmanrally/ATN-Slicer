@@ -71,6 +71,7 @@ private:
     wxButton*             m_btn_expand {nullptr}; // opens the camera in a large, resizable pop-out window
     wxString              m_camera_url;           // last stream URL, so the pop-out streams the same feed
     bool                  m_camera_expanded {false}; // pop-out open: hand it the single stream; poll leaves the docked feed alone
+    wxWindow*             m_expand_dlg {nullptr};    // the non-modal camera pop-out, so controls behind it stay usable
 
     wxStaticText* m_conn {nullptr};      // connection / error line
     wxStaticText* m_state {nullptr};     // printer state

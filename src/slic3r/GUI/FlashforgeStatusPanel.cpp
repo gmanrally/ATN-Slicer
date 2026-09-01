@@ -125,36 +125,40 @@ void FlashforgeStatusPanel::on_expand_camera()
     if (m_camera_url.empty())
         return;
 
-    // FlashForge cameras (AD5X / 5M) serve a SINGLE client: a second connection makes the printer
-    // drop one feed, so the pop-out would just show "stream ended". Worse, the status poll keeps
-    // calling m_camera->Start() on the docked feed; once its stream is stolen that stops being a
-    // no-op and churns socket close + a fresh worker thread every tick inside this modal loop —
-    // which is what was crashing the app on a second open. So hand the single stream to the pop-out:
-    // pause the docked feed (and tell the poll to leave it alone) while the dialog is open, then
-    // resume it on close. Resizable + maximisable so the user can make it as big as they like.
+    if (m_expand_dlg) { m_expand_dlg->Raise(); return; }   // already open — bring it forward
+
+    // FlashForge cameras (AD5X / 5M) serve a SINGLE client, so hand the one stream to the pop-out:
+    // pause the docked feed (and tell the poll to leave it alone) while the window is open, resume
+    // on close. The window is NON-MODAL (Show, not ShowModal): a modal pop-out silently blocked the
+    // printer controls (Pause/Cancel) behind it — clicks never reached the buttons while the camera
+    // was expanded. Resizable + maximisable so the user can make it as big as they like.
     const wxString url = m_camera_url;   // capture: the poll won't update m_camera_url while expanded
     m_camera_expanded = true;
     if (m_camera) m_camera->Stop();      // free the single connection for the pop-out
 
-    {
-        wxDialog dlg(this, wxID_ANY, _L("Camera"), wxDefaultPosition, FromDIP(wxSize(960, 720)),
-                     wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER | wxMAXIMIZE_BOX);
-        dlg.SetBackgroundColour(*wxBLACK);
+    auto* dlg = new wxDialog(this, wxID_ANY, _L("Camera"), wxDefaultPosition, FromDIP(wxSize(960, 720)),
+                             wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER | wxMAXIMIZE_BOX);
+    m_expand_dlg = dlg;
+    dlg->SetBackgroundColour(*wxBLACK);
 
-        auto* s    = new wxBoxSizer(wxVERTICAL);
-        auto* view = new FlashforgeCameraView(&dlg);
-        s->Add(view, 1, wxEXPAND);
-        dlg.SetSizer(s);
+    auto* s    = new wxBoxSizer(wxVERTICAL);
+    auto* view = new FlashforgeCameraView(dlg);
+    s->Add(view, 1, wxEXPAND);
+    dlg->SetSizer(s);
+    view->Start(url);
 
-        view->Start(url);
-        dlg.CentreOnParent();
-        dlg.ShowModal();
-        view->Stop();                    // stop the stream before the dialog (and view) are destroyed
-    }
+    dlg->Bind(wxEVT_CLOSE_WINDOW, [this, view](wxCloseEvent&) {
+        view->Stop();                    // stop the pop-out stream before the window is destroyed
+        m_camera_expanded = false;
+        if (m_camera && !m_camera_url.empty())
+            m_camera->Start(m_camera_url);   // resume the docked feed on the now-free connection
+        wxWindow* d = m_expand_dlg;
+        m_expand_dlg = nullptr;
+        if (d) d->Destroy();
+    });
 
-    m_camera_expanded = false;
-    if (m_camera && !m_camera_url.empty())
-        m_camera->Start(m_camera_url);   // resume the docked feed on the now-free connection
+    dlg->CentreOnParent();
+    dlg->Show();                         // non-modal: the printer controls behind it stay live
 }
 
 void FlashforgeStatusPanel::build_ui()
