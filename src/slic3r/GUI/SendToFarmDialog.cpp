@@ -758,11 +758,17 @@ void SendToFarmDialog::do_send()
                     plater->notify_atn_sent_to_farm();
                 // The revision (including the editable project 3MF) is now stored in the
                 // farm, so the local project is effectively saved — clear the "unsaved"
-                // state so closing won't warn. Only when we actually uploaded the model.
-                if (have_3mf) {
+                // state so closing won't warn. Defer to a nested CallAfter so the reset runs
+                // AFTER the apply_part_number() GUI cascade above: set_project_filename() can
+                // otherwise re-flag the project dirty in the same event cycle and revive the
+                // false "save project?" prompt (this is why the earlier inline reset didn't
+                // stick). Cleared on every successful send — the revision is on the farm
+                // regardless of whether the model 3MF export happened to succeed.
+                BOOST_LOG_TRIVIAL(info) << "ATN SendToFarm: clearing project-dirty after farm send (have_3mf=" << have_3mf << ")";
+                wxGetApp().CallAfter([]() {
                     if (Plater* plater = wxGetApp().plater())
                         plater->reset_project_dirty_after_save();
-                }
+                });
               } catch (const std::exception& e) {
                 BOOST_LOG_TRIVIAL(error) << "ATN SendToFarm post-upload UI update threw: " << e.what();
                 if (m_send) m_send->Enable();
