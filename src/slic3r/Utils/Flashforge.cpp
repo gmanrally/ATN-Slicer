@@ -229,6 +229,20 @@ std::string sanitize_flashforge_filename(const std::string& filename, const std:
 
 } // namespace
 
+// The serial (TCP :8899) path reports the socket's OS error text. When the failure is LOGICAL --
+// the host accepted the connection but never answered like a FlashForge printer, which is exactly
+// what a Klipper/Creality machine does when a preset is mis-typed as FlashForge -- the error code
+// is 0, and Windows renders code 0 as "The operation completed successfully". An error dialog that
+// reports success sends the user the wrong way; say what actually happened instead.
+static wxString client_error(const Utils::TCPConsole& client, const std::string& host)
+{
+    const std::string m = client.error_message();
+    if (m.empty() || m.find("completed successfully") != std::string::npos || m == "Success")
+        return wxString::Format(_(L("No FlashForge printer answered at %s -- check the printer's Host Type and IP address.")),
+                                wxString::FromUTF8(host.c_str()));
+    return wxString::FromUTF8(m.c_str());
+}
+
 Flashforge::Flashforge(DynamicPrintConfig* config)
     : m_host()
     , m_serial_number()
@@ -363,7 +377,7 @@ bool Flashforge::test(wxString& msg) const
     client.enqueue_cmd(controlCommand);
     bool res = client.run_queue();
     if (!res) {
-        msg = wxString::FromUTF8(client.error_message().c_str());
+        msg = client_error(client, m_host);
         BOOST_LOG_TRIVIAL(info) << boost::format("[Flashforge Serial] testing connection failed");
     } else {
         BOOST_LOG_TRIVIAL(info) << boost::format("[Flashforge Serial] testing connection success");
@@ -408,7 +422,7 @@ bool Flashforge::connect(wxString& msg) const
     bool res = client.run_queue();
 
     if (!res) {
-        msg = wxString::FromUTF8(client.error_message().c_str());
+        msg = client_error(client, m_host);
         BOOST_LOG_TRIVIAL(info) << boost::format("[Flashforge Serial] Failed to initiate connection");
     } else
         BOOST_LOG_TRIVIAL(info) << boost::format("[Flashforge Serial] Successfully initiated Connection");
@@ -425,7 +439,7 @@ bool Flashforge::start_print(wxString& msg, const std::string& filename) const
     bool res = client.run_queue();
 
     if (!res) {
-        msg = wxString::FromUTF8(client.error_message().c_str());
+        msg = client_error(client, m_host);
         BOOST_LOG_TRIVIAL(info) << boost::format("[Flashforge Serial] Failed to start print %1%") % safe_filename;
     } else
         BOOST_LOG_TRIVIAL(info) << boost::format("[Flashforge Serial] Started print %1%") % safe_filename;
@@ -492,7 +506,7 @@ bool Flashforge::upload(PrintHostUpload upload_data, ProgressFn progress_fn, Err
 
         if (!res) {
             BOOST_LOG_TRIVIAL(info) << boost::format("[Flashforge Serial] error %1%") % client.error_message().c_str();
-            errormsg = wxString::FromUTF8(client.error_message().c_str());
+            errormsg = client_error(client, m_host);
             error_fn(std::move(errormsg));
         } else {
 
