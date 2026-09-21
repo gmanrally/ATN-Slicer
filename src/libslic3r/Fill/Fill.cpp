@@ -13,6 +13,7 @@
 #include "ExtrusionEntity.hpp"
 #include "FillBase.hpp"
 #include "FillRectilinear.hpp"
+#include "FillChannelBridge.hpp"
 #include "FillLightning.hpp"
 #include "FillConcentricInternal.hpp"
 #include "FillTpmsD.hpp"
@@ -1233,13 +1234,16 @@ void Layer::make_fills(FillAdaptive::Octree* adaptive_fill_octree, FillAdaptive:
 
     for (SurfaceFill &surface_fill : surface_fills) {
         // Create the filler object.
+        const auto &rcfg = m_regions[surface_fill.region_id]->region().config();
         std::unique_ptr<Fill> f = std::unique_ptr<Fill>(Fill::new_from_type(surface_fill.params.pattern));
+        // ATN: an EXTERNAL bridge over a channel (an O-ring groove printed groove-down, any curved gap of
+        // near-constant width) gets spokes across the local shortest span instead of one global angle.
+        // Opt-in, and FillChannelBridge itself falls back to rectilinear for anything not channel-shaped.
+        if (rcfg.bridge_follow_span && surface_fill.params.extrusion_role == erBridgeInfill)
+            f.reset(new FillChannelBridge());
         f->set_bounding_box(bbox);
         f->layer_id = this->id();
-        {
-            const auto &rcfg = m_regions[surface_fill.region_id]->region().config();
-            f->dont_alternate_fill_direction = rcfg.zaa_enabled && rcfg.zaa_dont_alternate_fill_direction;
-        }
+        f->dont_alternate_fill_direction = rcfg.zaa_enabled && rcfg.zaa_dont_alternate_fill_direction;
         f->z 		= this->print_z;
         f->angle 	= surface_fill.params.angle;
         f->fixed_angle = surface_fill.params.fixed_angle;

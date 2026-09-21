@@ -1084,6 +1084,7 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionFloat,                bridge_angle))
     ((ConfigOptionFloat,                internal_bridge_angle)) // ORCA: Internal bridge angle override
     ((ConfigOptionBool,                 relative_bridge_angle)) // ORCA: Relative bridge angle flag
+    ((ConfigOptionBool,                 bridge_follow_span))    // ATN: bridge spokes across the local shortest span
     ((ConfigOptionFloat,                bridge_flow))
     ((ConfigOptionFloatOrPercent,       bridge_line_width))
     ((ConfigOptionFloat,                internal_bridge_flow))

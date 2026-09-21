@@ -1289,6 +1289,18 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(false));
 
+    // ATN: see Fill/FillChannelBridge.hpp.
+    def = this->add("bridge_follow_span", coBool);
+    def->label = L("Bridge along the shortest span");
+    def->category = L("Strength");
+    def->tooltip = L("For external bridges over a channel -- an O-ring groove printed groove-down, or any curved gap of "
+                     "near-constant width -- lay every bridge line across the local shortest span and zigzag round the "
+                     "arc, instead of one bridge angle for the whole surface. A single angle is only right at two points "
+                     "of a ring; here each line spans just the gap and is anchored at both ends. Bridges that are not "
+                     "channel-shaped keep the normal bridge direction.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("bridge_density", coPercent);
     def->label = L("External bridge density");
     def->category = L("Strength");

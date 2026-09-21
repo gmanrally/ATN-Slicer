@@ -1440,6 +1440,7 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "bridge_angle"
             || opt_key == "internal_bridge_angle" // ORCA: Internal bridge angle override
             || opt_key == "relative_bridge_angle" // ORCA: Relative bridge angle
+            || opt_key == "bridge_follow_span"    // ATN: bridge spokes across the local shortest span
             //BBS
             || opt_key == "bridge_line_width"
             || opt_key == "bridge_density"
