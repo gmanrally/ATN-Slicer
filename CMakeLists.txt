@@ -960,5 +960,17 @@ set(CPACK_CREATE_DESKTOP_LINKS "ATN_Slicer")
 set (CPACK_RESOURCE_FILE_LICENSE ${CMAKE_SOURCE_DIR}/LICENSE.txt) # must also include in install command
 
 set(CPACK_WIX_UPGRADE_GUID "058245e8-20e0-4a95-9ab7-1acfe17ad511")
+
+# ATN: Authenticode. Three hooks, all inert unless the ATN_SIGN environment variable
+# names the signing script when cpack runs, so packaging without a signing identity
+# is unchanged:
+#   1. the staged .exe / .dll files are signed before NSIS packs them
+#   2. NSIS signs the uninstaller it generates (!uninstfinalize)
+#   3. NSIS signs the finished installer (!finalize)
+# "= 0" makes a failed signature fail the package rather than ship unsigned.
+set (CPACK_PRE_BUILD_SCRIPTS "${CMAKE_SOURCE_DIR}/cmake/atn_sign_staged.cmake")
+set (ATN_SIGN_HOOK "${CMAKE_SOURCE_DIR}/tools/atn_sign_hook.bat")
+set (CPACK_NSIS_DEFINES "!uninstfinalize 'call \\\"${ATN_SIGN_HOOK}\\\" \\\"%1\\\"' = 0\n!finalize 'call \\\"${ATN_SIGN_HOOK}\\\" \\\"%1\\\"' = 0")
+
 set(CPACK_GENERATOR NSIS)
 include(CPack)
