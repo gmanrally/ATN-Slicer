@@ -1010,8 +1010,9 @@ void PrintObject::detect_floating_extrusions()
         m_floating_extrusion_spots.clear();
         if (this->config().detect_floating_extrusions.value) {
             m_print->set_status(72, L("Detecting floating extrusions"));
+            // #13712 made inner_wall_acceleration per-extruder-variant and dropped the acceleration
+            // term from SupportSpotsGenerator::Params (same as the curled-extrusion estimate above).
             SupportSpotsGenerator::Params params{this->print()->m_config.filament_type.values,
-                                                 float(this->print()->default_object_config().inner_wall_acceleration.getFloat()),
                                                  this->config().raft_layers.getInt(), this->config().brim_type.value,
                                                  float(this->config().brim_width.getFloat())};
             SupportSpotsGenerator::FloatingExtrusionSpots spots =
