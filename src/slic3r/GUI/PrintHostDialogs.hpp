@@ -13,8 +13,10 @@
 #include "MsgDialog.hpp"
 #include "../Utils/PrintHost.hpp"
 #include "../Utils/Flashforge.hpp"
+#include "../Utils/QidiPrinterLink.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/ProjectTask.hpp"
+#include <wx/image.h>
 class wxButton;
 class wxTextCtrl;
 class wxComboBox;
@@ -24,6 +26,7 @@ class wxFlexGridSizer;
 class wxStaticText;
 class wxWrapSizer;
 class CheckBox;
+class SwitchButton;
 
 namespace Slic3r { namespace GUI { class BitmapComboBox; } }
 
@@ -47,6 +50,9 @@ public:
     virtual std::map<std::string, std::string> extendedInfo() const { return {}; }
 
 protected:
+    // ATN: lets a vendor dialog pick its own window title and headline (the Bambu-style "Send print job" layout).
+    PrintHostSendDialog(const boost::filesystem::path &path, PrintHostPostUploadActions post_actions, const wxArrayString& groups, const wxArrayString& storage_paths, const wxArrayString& storage_names, bool switch_to_device_tab, const wxString& title, const wxString& headline);
+
     wxTextCtrl *txt_filename;
     wxComboBox *combo_groups;
     wxComboBox* combo_storage;
@@ -59,6 +65,57 @@ protected:
     boost::filesystem::path m_path;
     PrintHostPostUploadActions m_post_actions;
     wxArrayString m_storage_names;
+};
+
+// ATN: "Send print job" for Qidi printers (Klipper + Moonraker) in the Bambu send-dialog layout: plate
+// thumbnail, name, time and weight, the printer with its live state, the plate's filaments, and the four
+// job options Qidi Studio offers (Timelapse, Auto Bed Leveling, Enable Box, Enable Polar Cooler). The
+// options are read from and written to the printer through QidiPrinterLink; the file goes through the
+// configured print host as before.
+class QidiPrintHostSendDialog : public PrintHostSendDialog
+{
+public:
+    QidiPrintHostSendDialog(const boost::filesystem::path&   path,
+                            PrintHostPostUploadActions       post_actions,
+                            const wxArrayString&             groups,
+                            const wxArrayString&             storage_paths,
+                            const wxArrayString&             storage_names,
+                            bool                             switch_to_device_tab,
+                            const Slic3r::QidiPrinterLink*   link,
+                            const Slic3r::QidiPrinterState&  state,
+                            const wxString&                  printer_name,
+                            const wxString&                  bed_type,
+                            const wxImage&                   thumbnail,
+                            const wxString&                  time_text,
+                            const wxString&                  weight_text,
+                            const std::vector<FilamentInfo>& project_filaments);
+    virtual void init() override;
+    virtual std::map<std::string, std::string> extendedInfo() const override;
+    Slic3r::QidiSendOptions send_options() const;
+
+private:
+    void          refresh_printer_state();
+    void          update_printer_card();
+    void          update_toggles_from_state();
+    SwitchButton* add_toggle(wxFlexGridSizer* grid, const wxString& label, const wxString& tooltip);
+    wxColour      to_wx_colour(const std::string& color) const;
+
+    const Slic3r::QidiPrinterLink* m_link{nullptr};
+    Slic3r::QidiPrinterState       m_state;
+    wxString                       m_last_error;
+    wxString                       m_printer_name;
+    wxString                       m_bed_type;
+    wxImage                        m_thumbnail;
+    wxString                       m_time_text;
+    wxString                       m_weight_text;
+    std::vector<FilamentInfo>      m_project_filaments;
+
+    wxStaticText* m_printer_status{nullptr};
+    wxStaticText* m_filament_note{nullptr};
+    SwitchButton* m_sw_timelapse{nullptr};
+    SwitchButton* m_sw_leveling{nullptr};
+    SwitchButton* m_sw_box{nullptr};
+    SwitchButton* m_sw_polar{nullptr};
 };
 
 

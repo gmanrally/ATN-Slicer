@@ -13,6 +13,17 @@ How this is used:
 
 ## Unreleased
 
+### Added
+- **"Send print job" dialog for Qidi printers.** Sending to a Qidi printer (X-Max 4,
+  X-Plus 4, Q2 and the rest of the Qidi profiles) now opens the same style of dialog
+  Bambu printers get: plate thumbnail, file name, estimated time and weight, the
+  printer with its live Klipper state and plate type, the plate's filaments, and the
+  four job options Qidi Studio offers — Timelapse, Auto Bed Leveling, Enable Box and
+  Enable Polar Cooler. The options are read from the printer when the dialog opens
+  and written back over Moonraker just before the upload, so they take effect for
+  that print exactly as they do from Qidi Studio. Send starts the print; "Upload only"
+  just stores the file.
+
 ## v2.4.1 — 2026-06-16
 
 ### Fixed
