@@ -38,6 +38,13 @@
 #include "../Utils/CrealityPrint.hpp"
 #include "BitmapComboBox.hpp"
 #include "wxExtensions.hpp"
+#include "Widgets/SwitchButton.hpp"
+#include "Widgets/StaticBox.hpp"
+#include "Widgets/Button.hpp"
+#include "Widgets/Label.hpp"
+#include "Widgets/StateColor.hpp"
+#include <wx/statbmp.h>
+#include <wx/panel.h>
 
 #include <nlohmann/json.hpp>
 
@@ -424,8 +431,13 @@ static const char *CONFIG_KEY_GROUP = "printhost_group";
 static const char* CONFIG_KEY_STORAGE = "printhost_storage";
 
 PrintHostSendDialog::PrintHostSendDialog(const fs::path &path, PrintHostPostUploadActions post_actions, const wxArrayString &groups, const wxArrayString& storage_paths, const wxArrayString& storage_names, bool switch_to_device_tab)
-    : MsgDialog(static_cast<wxWindow*>(wxGetApp().mainframe), _L("Send G-code to printer host"), _L("Upload to Printer Host with the following filename:"), 0) // Set style = 0 to avoid default creation of the "OK" button. 
-                                                                                                                                                               // All buttons will be added later in this constructor 
+    : PrintHostSendDialog(path, post_actions, groups, storage_paths, storage_names, switch_to_device_tab,
+                          _L("Send G-code to printer host"), _L("Upload to Printer Host with the following filename:"))
+{}
+
+PrintHostSendDialog::PrintHostSendDialog(const fs::path &path, PrintHostPostUploadActions post_actions, const wxArrayString &groups, const wxArrayString& storage_paths, const wxArrayString& storage_names, bool switch_to_device_tab, const wxString& title, const wxString& headline)
+    : MsgDialog(static_cast<wxWindow*>(wxGetApp().mainframe), title, headline, 0) // Set style = 0 to avoid default creation of the "OK" button.
+                                                                                   // All buttons will be added later in this constructor
     , txt_filename(new wxTextCtrl(this, wxID_ANY))
     , combo_groups(!groups.IsEmpty() ? new wxComboBox(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, groups, wxCB_READONLY) : nullptr)
     , combo_storage(storage_names.GetCount() > 1 ? new wxComboBox(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, storage_names, wxCB_READONLY) : nullptr)
@@ -2104,6 +2116,372 @@ std::map<std::string, std::string> CrealityPrintHostSendDialog::extendedInfo() c
     }
 
     return info;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// ATN: Qidi "Send print job" (Bambu-style layout over Moonraker)
+// ---------------------------------------------------------------------------------------------------------
+
+QidiPrintHostSendDialog::QidiPrintHostSendDialog(const fs::path&                  path,
+                                                 PrintHostPostUploadActions       post_actions,
+                                                 const wxArrayString&             groups,
+                                                 const wxArrayString&             storage_paths,
+                                                 const wxArrayString&             storage_names,
+                                                 bool                             switch_to_device_tab,
+                                                 const Slic3r::QidiPrinterLink*   link,
+                                                 const Slic3r::QidiPrinterState&  state,
+                                                 const wxString&                  printer_name,
+                                                 const wxString&                  bed_type,
+                                                 const wxImage&                   thumbnail,
+                                                 const wxString&                  time_text,
+                                                 const wxString&                  weight_text,
+                                                 const std::vector<FilamentInfo>& project_filaments)
+    : PrintHostSendDialog(path, post_actions, groups, storage_paths, storage_names, switch_to_device_tab, _L("Send print job"), wxEmptyString)
+    , m_link(link)
+    , m_state(state)
+    , m_printer_name(printer_name)
+    , m_bed_type(bed_type)
+    , m_thumbnail(thumbnail)
+    , m_time_text(time_text)
+    , m_weight_text(weight_text)
+    , m_project_filaments(project_filaments)
+{}
+
+wxColour QidiPrintHostSendDialog::to_wx_colour(const std::string& color) const
+{
+    std::string c = color;
+    if (!c.empty() && c[0] != '#')
+        c = "#" + c;
+    if (c.size() > 7)
+        c = c.substr(0, 7); // drop an alpha byte
+    wxColour col(wxString::FromUTF8(c.c_str()));
+    return col.IsOk() ? col : wxColour("#E0E0E0");
+}
+
+SwitchButton* QidiPrintHostSendDialog::add_toggle(wxFlexGridSizer* grid, const wxString& label, const wxString& tooltip)
+{
+    auto* text = new wxStaticText(this, wxID_ANY, label);
+    text->SetFont(::Label::Body_13);
+    text->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
+    text->SetToolTip(tooltip);
+    auto* sw = new SwitchButton(this);
+    sw->SetLabels(_L("On"), _L("Off"));
+    sw->SetToolTip(tooltip);
+    grid->Add(text, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
+    grid->Add(sw, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(30));
+    return sw;
+}
+
+void QidiPrintHostSendDialog::init()
+{
+    const AppConfig* app_config = wxGetApp().app_config;
+    const auto&      path       = m_path;
+    if (logo != nullptr)
+        logo->Hide();
+
+    const wxColour text_colour  = StateColor::darkModeColorFor(wxColour("#323A3D"));
+    const wxColour muted_colour = StateColor::darkModeColorFor(wxColour("#6B6B6B"));
+    auto section_label = [&](const wxString& label) {
+        auto* t = new wxStaticText(this, wxID_ANY, label);
+        t->SetFont(::Label::Head_13);
+        t->SetForegroundColour(text_colour);
+        return t;
+    };
+    auto make_card = [&](wxWindow* parent) {
+        auto* card = new StaticBox(parent);
+        card->SetCornerRadius(FromDIP(6));
+        card->SetBorderColor(StateColor(std::pair<wxColour, int>(StateColor::darkModeColorFor(wxColour("#DBDBDB")), StateColor::Normal)));
+        card->SetBackgroundColor(StateColor(std::pair<wxColour, int>(StateColor::darkModeColorFor(wxColour("#FFFFFF")), StateColor::Normal)));
+        return card;
+    };
+
+    this->SetMinSize(wxSize(FromDIP(640), -1));
+
+    // ---- header: plate thumbnail, the file name on the printer, estimates
+    {
+        auto*     header   = new wxBoxSizer(wxHORIZONTAL);
+        const int thumb_px = FromDIP(120);
+        wxBitmap  bmp;
+        if (m_thumbnail.IsOk()) {
+            bmp = wxBitmap(m_thumbnail.Scale(thumb_px, thumb_px, wxIMAGE_QUALITY_HIGH));
+        } else {
+            wxImage blank(thumb_px, thumb_px);
+            blank.SetRGB(wxRect(0, 0, thumb_px, thumb_px), 240, 240, 240);
+            bmp = wxBitmap(blank);
+        }
+        auto* thumb = new wxStaticBitmap(this, wxID_ANY, bmp, wxDefaultPosition, wxSize(thumb_px, thumb_px));
+        header->Add(thumb, 0, wxRIGHT | wxALIGN_CENTER_VERTICAL, FromDIP(16));
+
+        auto* col = new wxBoxSizer(wxVERTICAL);
+        txt_filename->SetFont(::Label::Head_14);
+        txt_filename->SetMinSize(wxSize(FromDIP(420), -1));
+        col->Add(txt_filename, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
+        auto* hint = new wxStaticText(this, wxID_ANY, _L("File name on the printer; use forward slashes ( / ) for a sub-folder."));
+        hint->SetFont(::Label::Body_12);
+        hint->SetForegroundColour(muted_colour);
+        col->Add(hint, 0, wxBOTTOM, FromDIP(8));
+        wxString est;
+        if (!m_time_text.empty())
+            est += _L("Est. time") + ": " + m_time_text;
+        if (!m_weight_text.empty()) {
+            if (!est.empty())
+                est += "      ";
+            est += _L("Weight") + ": " + m_weight_text;
+        }
+        if (!est.empty()) {
+            auto* e = new wxStaticText(this, wxID_ANY, est);
+            e->SetFont(::Label::Body_13);
+            e->SetForegroundColour(text_colour);
+            col->Add(e, 0);
+        }
+        header->Add(col, 1, wxEXPAND);
+        content_sizer->Add(header, 0, wxEXPAND | wxBOTTOM, FromDIP(14));
+    }
+
+    // ---- printer card with its live state, and the plate type beside it
+    {
+        content_sizer->Add(section_label(_L("Printer")), 0, wxBOTTOM, FromDIP(6));
+        auto* row        = new wxBoxSizer(wxHORIZONTAL);
+        auto* card       = make_card(this);
+        auto* card_sizer = new wxBoxSizer(wxHORIZONTAL);
+        auto* lines      = new wxBoxSizer(wxVERTICAL);
+        auto* name       = new wxStaticText(card, wxID_ANY, m_printer_name);
+        name->SetFont(::Label::Head_14);
+        name->SetForegroundColour(text_colour);
+        m_printer_status = new wxStaticText(card, wxID_ANY, wxEmptyString);
+        m_printer_status->SetFont(::Label::Body_12);
+        lines->Add(name, 0, wxBOTTOM, FromDIP(2));
+        lines->Add(m_printer_status, 0);
+        card_sizer->Add(lines, 1, wxALL, FromDIP(10));
+        auto* refresh = new Button(card, _L("Refresh"));
+        refresh->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { refresh_printer_state(); });
+        card_sizer->Add(refresh, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(10));
+        card->SetSizer(card_sizer);
+        row->Add(card, 1, wxEXPAND | wxRIGHT, FromDIP(10));
+        if (!m_bed_type.empty()) {
+            auto* plate = make_card(this);
+            auto* ps    = new wxBoxSizer(wxVERTICAL);
+            auto* pl    = new wxStaticText(plate, wxID_ANY, _L("Plate"));
+            pl->SetFont(::Label::Body_12);
+            pl->SetForegroundColour(muted_colour);
+            auto* pv = new wxStaticText(plate, wxID_ANY, m_bed_type);
+            pv->SetFont(::Label::Body_13);
+            pv->SetForegroundColour(text_colour);
+            ps->Add(pl, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(10));
+            ps->Add(pv, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
+            plate->SetSizer(ps);
+            row->Add(plate, 0, wxEXPAND);
+        }
+        content_sizer->Add(row, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
+
+        auto* checkbox_sizer = new wxBoxSizer(wxHORIZONTAL);
+        auto* checkbox       = new ::CheckBox(this, wxID_APPLY);
+        checkbox->SetValue(m_switch_to_device_tab);
+        checkbox->Bind(wxEVT_TOGGLEBUTTON, [this](wxCommandEvent& e) {
+            auto* source = dynamic_cast<::CheckBox*>(e.GetEventObject());
+            if (source != nullptr)
+                source->SetValue(e.IsChecked());
+            m_switch_to_device_tab = e.IsChecked();
+            e.Skip();
+        });
+        checkbox_sizer->Add(checkbox, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+        auto* checkbox_text = new wxStaticText(this, wxID_ANY, _L("Switch to Device tab after sending."));
+        checkbox_text->SetFont(::Label::Body_13);
+        checkbox_text->SetForegroundColour(text_colour);
+        checkbox_sizer->Add(checkbox_text, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+        content_sizer->Add(checkbox_sizer, 0, wxBOTTOM, FromDIP(4));
+    }
+
+    // ---- the plate's filaments and where they feed from
+    {
+        content_sizer->Add(section_label(_L("Filament")), 0, wxTOP | wxBOTTOM, FromDIP(6));
+        auto*          wrap   = new wxWrapSizer(wxHORIZONTAL, wxWRAPSIZER_DEFAULT_FLAGS);
+        const wxString target = m_state.box_count > 0 ? _L("Box") : _L("Ext");
+        for (const auto& f : m_project_filaments) {
+            auto* chip   = make_card(this);
+            auto* cs     = new wxBoxSizer(wxHORIZONTAL);
+            auto* swatch = new wxPanel(chip, wxID_ANY, wxDefaultPosition, wxSize(FromDIP(16), FromDIP(16)));
+            swatch->SetBackgroundColour(to_wx_colour(f.color));
+            cs->Add(swatch, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(8));
+            auto* t = new wxStaticText(chip, wxID_ANY, wxString::FromUTF8(f.type.c_str()) + "   " + target);
+            t->SetFont(::Label::Body_13);
+            t->SetForegroundColour(text_colour);
+            cs->Add(t, 0, wxRIGHT | wxALIGN_CENTER_VERTICAL, FromDIP(10));
+            chip->SetSizer(cs);
+            wrap->Add(chip, 0, wxRIGHT | wxBOTTOM, FromDIP(8));
+        }
+        content_sizer->Add(wrap, 0, wxEXPAND);
+        m_filament_note = new wxStaticText(this, wxID_ANY, wxEmptyString);
+        m_filament_note->SetFont(::Label::Body_12);
+        m_filament_note->SetForegroundColour(muted_colour);
+        content_sizer->Add(m_filament_note, 0, wxBOTTOM, FromDIP(8));
+    }
+
+    // ---- the four job options, read from the printer and written back just before the upload
+    {
+        content_sizer->Add(section_label(_L("Print options")), 0, wxTOP | wxBOTTOM, FromDIP(6));
+        auto* grid     = new wxFlexGridSizer(4, FromDIP(8), FromDIP(8));
+        m_sw_timelapse = add_toggle(grid, _L("Timelapse"), _L("Record a timelapse of this print (Moonraker timelapse)."));
+        m_sw_leveling  = add_toggle(grid, _L("Auto Bed Leveling"), _L("On: probe a fresh adaptive bed mesh before the print. Off: use the mesh saved on the printer."));
+        m_sw_box       = add_toggle(grid, _L("Enable Box"), _L("Feed from the QIDI Box. Only available when a Box is fitted."));
+        m_sw_polar     = add_toggle(grid, _L("Enable Polar Cooler"), _L("Run the Polar Cooler during this print."));
+        content_sizer->Add(grid, 0, wxBOTTOM, FromDIP(8));
+    }
+
+    update_printer_card();
+    update_toggles_from_state();
+
+    // ---- file name: last used folder + this plate's name, stem pre-selected (as the other host dialogs)
+    wxString recent_path = from_u8(app_config->get("recent", CONFIG_KEY_PATH));
+    if (recent_path.Length() > 0 && recent_path[recent_path.Length() - 1] != '/')
+        recent_path += '/';
+    const auto recent_path_len = recent_path.Length();
+    recent_path += path.filename().wstring();
+    wxString   stem(path.stem().wstring());
+    const auto stem_len = stem.Length();
+    txt_filename->SetValue(recent_path);
+    if (size_t extension_start = recent_path.find_last_of('.'); extension_start != std::string::npos)
+        m_valid_suffix = recent_path.substr(extension_start);
+
+    auto validate_path = [this](const wxString& filename) -> bool {
+        if (!filename.Lower().EndsWith(m_valid_suffix.Lower())) {
+            MessageDialog msg_wingow(this, wxString::Format(_L("Upload filename doesn't end with \"%s\". Do you wish to continue?"), m_valid_suffix),
+                                     wxString(SLIC3R_APP_NAME), wxYES | wxNO);
+            if (msg_wingow.ShowModal() == wxID_NO)
+                return false;
+        }
+        return true;
+    };
+
+    if (m_post_actions.has(PrintHostPostUploadAction::StartPrint)) {
+        auto* btn_send = add_button(wxID_YES, true, _L("Send"));
+        btn_send->Bind(wxEVT_BUTTON, [this, validate_path](wxCommandEvent&) {
+            if (validate_path(txt_filename->GetValue())) {
+                post_upload_action = PrintHostPostUploadAction::StartPrint;
+                EndDialog(wxID_OK);
+            }
+        });
+    }
+    auto* btn_upload = add_button(wxID_OK, false, _L("Upload only"));
+    btn_upload->Bind(wxEVT_BUTTON, [this, validate_path](wxCommandEvent&) {
+        if (validate_path(txt_filename->GetValue())) {
+            post_upload_action = PrintHostPostUploadAction::None;
+            EndDialog(wxID_OK);
+        }
+    });
+    add_button(wxID_CANCEL, false, _L("Cancel"));
+    finalize();
+
+#ifdef __linux__
+    txt_filename->Bind(wxEVT_KILL_FOCUS, [this](wxEvent& e) {
+        e.Skip();
+        txt_filename->SetInsertionPoint(txt_filename->GetLastPosition());
+    }, txt_filename->GetId());
+#endif /* __linux__ */
+    Bind(wxEVT_SHOW, [=](const wxShowEvent&) {
+        CallAfter([=]() {
+            txt_filename->SetInsertionPoint(0);
+            txt_filename->SetSelection(recent_path_len, recent_path_len + stem_len);
+        });
+    });
+}
+
+void QidiPrintHostSendDialog::refresh_printer_state()
+{
+    if (m_link != nullptr) {
+        wxBusyCursor wait;
+        wxString     err;
+        m_link->query(m_state, err);
+        m_last_error = err;
+    }
+    update_printer_card();
+    update_toggles_from_state();
+    Layout();
+    Fit();
+}
+
+void QidiPrintHostSendDialog::update_printer_card()
+{
+    if (m_printer_status == nullptr)
+        return;
+    const wxString host = m_link != nullptr ? wxString::FromUTF8(m_link->host().c_str()) : wxString();
+    wxString       status;
+    wxColour       colour;
+    if (!m_state.online) {
+        status = host + "   " + _L("Offline");
+        if (!m_last_error.empty())
+            status += ": " + m_last_error;
+        colour = wxColour("#D0021B");
+    } else {
+        status = host + "   " + _L("Online");
+        if (!m_state.klippy_state.empty())
+            status += "   Klipper " + from_u8(m_state.klippy_state);
+        if (!m_state.print_state.empty())
+            status += "   " + from_u8(m_state.print_state);
+        const bool idle = m_state.print_state.empty() || m_state.print_state == "standby" || m_state.print_state == "complete" ||
+                          m_state.print_state == "cancelled";
+        colour = idle ? wxColour("#1F8F4E") : wxColour("#E07B00");
+    }
+    m_printer_status->SetLabel(status);
+    m_printer_status->SetForegroundColour(colour);
+}
+
+void QidiPrintHostSendDialog::update_toggles_from_state()
+{
+    const bool online = m_state.online;
+    if (m_sw_timelapse != nullptr) {
+        m_sw_timelapse->SetValue(m_state.timelapse);
+        m_sw_timelapse->Enable(online && m_state.has_timelapse);
+    }
+    if (m_sw_leveling != nullptr) {
+        m_sw_leveling->SetValue(m_state.has_bed_leveling ? m_state.bed_leveling : true);
+        m_sw_leveling->Enable(online && m_state.has_bed_leveling);
+    }
+    if (m_sw_box != nullptr) {
+        m_sw_box->SetValue(m_state.box_count > 0 && m_state.enable_box);
+        m_sw_box->Enable(online && m_state.has_box_switch && m_state.box_count > 0);
+    }
+    if (m_sw_polar != nullptr) {
+        m_sw_polar->SetValue(m_state.has_polar_cooler ? m_state.polar_cooler : true);
+        m_sw_polar->Enable(online && m_state.has_polar_cooler);
+    }
+    if (m_filament_note != nullptr) {
+        wxString note;
+        if (!online)
+            note = _L("Printer not reachable: the options above are left as they are on the printer.");
+        else if (m_state.box_count > 0)
+            note = wxString::Format(_L("QIDI Box detected (%d slots). Slot assignment follows the printer's own mapping."), m_state.box_count * 4);
+        else
+            note = m_state.filament_detected ? _L("External spool: filament detected at the sensor.")
+                                             : _L("External spool: no filament detected at the sensor.");
+        m_filament_note->SetLabel(note);
+    }
+}
+
+Slic3r::QidiSendOptions QidiPrintHostSendDialog::send_options() const
+{
+    Slic3r::QidiSendOptions o;
+    const bool online = m_state.online;
+    o.timelapse          = m_sw_timelapse != nullptr && m_sw_timelapse->GetValue();
+    o.write_timelapse    = online && m_state.has_timelapse;
+    o.bed_leveling       = m_sw_leveling == nullptr || m_sw_leveling->GetValue();
+    o.write_bed_leveling = online && m_state.has_bed_leveling;
+    o.enable_box         = m_sw_box != nullptr && m_sw_box->GetValue();
+    o.write_enable_box   = online && m_state.has_box_switch && m_state.box_count > 0;
+    o.polar_cooler       = m_sw_polar == nullptr || m_sw_polar->GetValue();
+    o.write_polar_cooler = online && m_state.has_polar_cooler;
+    return o;
+}
+
+std::map<std::string, std::string> QidiPrintHostSendDialog::extendedInfo() const
+{
+    const auto o = send_options();
+    return {
+        {"qidi_timelapse", o.timelapse ? "1" : "0"},
+        {"qidi_bed_leveling", o.bed_leveling ? "1" : "0"},
+        {"qidi_enable_box", o.enable_box ? "1" : "0"},
+        {"qidi_polar_cooler", o.polar_cooler ? "1" : "0"},
+    };
 }
 
 }}

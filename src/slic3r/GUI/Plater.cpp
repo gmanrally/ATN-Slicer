@@ -162,6 +162,7 @@
 
 #include "PhysicalPrinterDialog.hpp"
 #include "PrintHostDialogs.hpp"
+#include "../Utils/QidiPrinterLink.hpp"
 #include "PlateSettingsDialog.hpp"
 #include "DailyTips.hpp"
 #include "CreatePresetsDialog.hpp"
@@ -17177,34 +17178,8 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
         const bool flashforge_local_api = host_type == htFlashforge && ff_serial_opt != nullptr && !ff_serial_opt->value.empty() &&
                                           ff_code_opt != nullptr && !ff_code_opt->value.empty();
 
-        std::unique_ptr<PrintHostSendDialog> pDlg;
-        if (host_type == htElegooLink) {
-            pDlg = std::make_unique<ElegooPrintHostSendDialog>(default_output_file, upload_job.printhost->get_post_upload_actions(), groups,
-                                                               storage_paths, storage_names,
-                                                               config->get_bool("open_device_tab_post_upload"));
-        } else if (host_type == htCrealityPrint) {
-            pDlg = std::make_unique<CrealityPrintHostSendDialog>(default_output_file, upload_job.printhost->get_post_upload_actions(), groups,
-                                                                 storage_paths, storage_names,
-                                                                 config->get_bool("open_device_tab_post_upload"),
-                                                                 upload_job.printhost.get());
-        } else if (flashforge_local_api) {
-            auto* flashforge_host = dynamic_cast<Flashforge*>(upload_job.printhost.get());
-            if (flashforge_host == nullptr) {
-                show_error(this, _L("Flashforge host is not available."), false);
-                return;
-            }
-
-            std::vector<FlashforgeMaterialSlot> slots;
-            bool                                supports_material_station = false;
-            {
-                wxBusyCursor wait;
-                wxString     msg;
-                if (!flashforge_host->fetch_material_slots(slots, &supports_material_station, msg)) {
-                    show_error(this, msg.empty() ? _L("Unable to log in to the Flashforge printer.") : msg, false);
-                    return;
-                }
-            }
-
+        // The plate's filaments (type, colour, id) for the vendor dialogs that show a filament row.
+        auto collect_project_filaments = [&]() -> std::vector<FilamentInfo> {
             std::vector<FilamentInfo> project_filaments;
             PlateDataPtrs               plate_data_list;
             DynamicPrintConfig          cfg                 = wxGetApp().preset_bundle->full_config();
@@ -17249,6 +17224,46 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
             if (!project_filaments.empty())
                 enrich_project_filaments(project_filaments);
             release_PlateData_list(plate_data_list);
+            return project_filaments;
+        };
+
+        // ATN: Qidi (Klipper + Moonraker) printers get the "Send print job" dialog in the Bambu layout. The
+        // link reads the printer's current job options for the dialog and writes the chosen ones back just
+        // before the upload (see QidiPrinterLink); the upload itself still goes through the configured host.
+        std::unique_ptr<QidiPrinterLink> qidi_link;
+        const bool qidi_send_dialog = preset_bundle->get_current_vendor_type() == VendorType::Klipper_Qidi &&
+                                      !physical_printer_config->opt_string("print_host").empty() &&
+                                      host_type != htFlashforge && host_type != htElegooLink && host_type != htCrealityPrint;
+
+        std::unique_ptr<PrintHostSendDialog> pDlg;
+        if (host_type == htElegooLink) {
+            pDlg = std::make_unique<ElegooPrintHostSendDialog>(default_output_file, upload_job.printhost->get_post_upload_actions(), groups,
+                                                               storage_paths, storage_names,
+                                                               config->get_bool("open_device_tab_post_upload"));
+        } else if (host_type == htCrealityPrint) {
+            pDlg = std::make_unique<CrealityPrintHostSendDialog>(default_output_file, upload_job.printhost->get_post_upload_actions(), groups,
+                                                                 storage_paths, storage_names,
+                                                                 config->get_bool("open_device_tab_post_upload"),
+                                                                 upload_job.printhost.get());
+        } else if (flashforge_local_api) {
+            auto* flashforge_host = dynamic_cast<Flashforge*>(upload_job.printhost.get());
+            if (flashforge_host == nullptr) {
+                show_error(this, _L("Flashforge host is not available."), false);
+                return;
+            }
+
+            std::vector<FlashforgeMaterialSlot> slots;
+            bool                                supports_material_station = false;
+            {
+                wxBusyCursor wait;
+                wxString     msg;
+                if (!flashforge_host->fetch_material_slots(slots, &supports_material_station, msg)) {
+                    show_error(this, msg.empty() ? _L("Unable to log in to the Flashforge printer.") : msg, false);
+                    return;
+                }
+            }
+
+            std::vector<FilamentInfo> project_filaments = collect_project_filaments();
 
             pDlg = std::make_unique<FlashforgePrintHostSendDialog>(default_output_file, upload_job.printhost->get_post_upload_actions(), groups,
                                                                    storage_paths, storage_names,
@@ -17257,6 +17272,54 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
                                                                    supports_material_station,
                                                                    std::move(slots),
                                                                    project_filaments);
+        } else if (qidi_send_dialog) {
+            qidi_link = std::make_unique<QidiPrinterLink>(*physical_printer_config);
+            QidiPrinterState qidi_state;
+            {
+                wxBusyCursor wait;
+                wxString     err;
+                qidi_link->query(qidi_state, err); // an offline printer is shown in the dialog, not fatal here
+            }
+
+            // Plate thumbnail and estimates for the dialog header, the same way the Bambu send dialog gets them.
+            wxImage  thumbnail;
+            wxString time_text;
+            if (PartPlate* plate = get_partplate_list().get_plate(resolved_plate_idx); plate != nullptr) {
+                ThumbnailData& data = plate->thumbnail_data;
+                if (data.is_valid()) {
+                    wxImage image(data.width, data.height);
+                    image.InitAlpha();
+                    for (unsigned int r = 0; r < data.height; ++r) {
+                        unsigned int rr = (data.height - 1 - r) * data.width;
+                        for (unsigned int c = 0; c < data.width; ++c) {
+                            unsigned char* px = (unsigned char*) data.pixels.data() + 4 * (rr + c);
+                            image.SetRGB((int) c, (int) r, px[0], px[1], px[2]);
+                            image.SetAlpha((int) c, (int) r, px[3]);
+                        }
+                    }
+                    thumbnail = image;
+                }
+                if (plate->get_slice_result())
+                    time_text = from_u8(short_time(get_time_dhms(plate->get_slice_result()->print_statistics.modes[0].time)));
+            }
+            wxString weight_text;
+            {
+                const auto& stats = get_partplate_list().get_current_fff_print().print_statistics();
+                weight_text = wxGetApp().app_config->get("use_inches") == "1" ? wxString::Format("%.2f oz", stats.total_weight * 0.035274)
+                                                                               : wxString::Format("%.2f g", stats.total_weight);
+            }
+            wxString bed_type;
+            {
+                DynamicPrintConfig full = preset_bundle->full_config();
+                if (const ConfigOption* bt = full.option("curr_bed_type"); bt != nullptr)
+                    bed_type = from_u8(bt->serialize());
+            }
+
+            pDlg = std::make_unique<QidiPrintHostSendDialog>(default_output_file, upload_job.printhost->get_post_upload_actions(), groups,
+                                                             storage_paths, storage_names, config->get_bool("open_device_tab_post_upload"),
+                                                             qidi_link.get(), qidi_state,
+                                                             from_u8(preset_bundle->printers.get_edited_preset().name), bed_type,
+                                                             thumbnail, time_text, weight_text, collect_project_filaments());
         } else {
             pDlg = std::make_unique<PrintHostSendDialog>(default_output_file, upload_job.printhost->get_post_upload_actions(), groups,
                                                          storage_paths, storage_names, config->get_bool("open_device_tab_post_upload"));
@@ -17265,6 +17328,17 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
         pDlg->init();
         if (pDlg->ShowModal() != wxID_OK) {
             return;
+        }
+
+        // ATN: push the Qidi job options to the printer before the upload; they are printer-side state the
+        // start macros read, not part of the file, so this is the moment they take effect.
+        if (auto* qidi_dlg = dynamic_cast<QidiPrintHostSendDialog*>(pDlg.get()); qidi_dlg != nullptr && qidi_link) {
+            wxBusyCursor wait;
+            wxString     err;
+            if (!qidi_link->apply(qidi_dlg->send_options(), err)) {
+                show_error(this, err, false);
+                return;
+            }
         }
 
         config->set_bool("open_device_tab_post_upload", pDlg->switch_to_device_tab());
