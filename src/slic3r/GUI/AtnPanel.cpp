@@ -620,7 +620,7 @@ void AtnPanel::handle_highlight_setting(const std::string& key)
     }
 
     // Bring the editor into view, then jump and blink.
-    wxGetApp().mainframe->select_tab(size_t(MainFrame::tp3DEditor));
+    wxGetApp().mainframe->select_tab(TAB_ID_PREPARE);
     wxGetApp().sidebar().jump_to_option(key, type, L"");
 }
 
@@ -674,7 +674,7 @@ void AtnPanel::handle_highlight_tool(const std::string& tool)
     }
 
     // Bring the 3D editor into view so the blinking arrow is visible.
-    wxGetApp().mainframe->select_tab(size_t(MainFrame::tp3DEditor));
+    wxGetApp().mainframe->select_tab(TAB_ID_PREPARE);
     if (it->second.first) {
         // Gizmo: the icon basename carries a "_dark" suffix in dark theme; try both,
         // the non-matching one is a harmless no-op.
@@ -745,7 +745,7 @@ void AtnPanel::handle_set_setting(const std::string& key, const std::string& val
     // a batch of recommendations where most are already correct doesn't yank the
     // editor around (and doesn't reset the highlighter off the one that changed).
     if (changed) {
-        wxGetApp().mainframe->select_tab(size_t(MainFrame::tp3DEditor));
+        wxGetApp().mainframe->select_tab(TAB_ID_PREPARE);
         wxGetApp().sidebar().jump_to_option(key, type, L"");
     }
 

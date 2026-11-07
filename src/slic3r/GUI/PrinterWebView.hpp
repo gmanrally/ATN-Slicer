@@ -6,6 +6,8 @@
 #include "wx/cmdline.h"
 #include "wx/notifmsg.h"
 #include "wx/settings.h"
+#include <wx/setup.h>
+#include <wx/event.h>
 #include <wx/webview.h>
 #include <wx/string.h>
 
@@ -26,6 +28,8 @@
 #include "wx/textctrl.h"
 #include <wx/timer.h>
 #include <memory>
+#include "Lazy.hpp"
+#include "libslic3r/PrintConfig.hpp"
 
 
 namespace Slic3r {
@@ -36,7 +40,7 @@ class PrinterWebViewHandler;
 class FlashforgeStatusPanel;
 
 
-class PrinterWebView : public wxPanel {
+class PrinterWebView : public wxPanel, public LazyInstance<PrinterWebView> {
 public:
     PrinterWebView(wxWindow *parent);
     virtual ~PrinterWebView();
@@ -63,14 +67,23 @@ private:
     friend class PrinterWebViewHandler;
 
     void SendAPIKey();
+    void create_browser();
+    void reset_browser();
 
     wxWebView* m_browser;
     long m_zoomFactor;
     wxString m_apikey;
     bool m_apikey_sent;
+    // Last url passed to load_url(), reloaded after reset_browser().
+    wxString m_url;
     wxString m_url_deferred;
+    // Host type the page was loaded for; it selects the handler, so a change needs a reload.
+    PrintHostType m_host_type{htOctoPrint};
+    // True once the page for m_url has finished loading in m_browser.
+    bool m_url_loaded{false};
     std::unique_ptr<PrinterWebViewHandler> m_handler;
     FlashforgeStatusPanel* m_ff_status {nullptr};   // lazily created; nullptr until a FF printer is shown
+    bool m_reset_on_show{false};
 
     // DECLARE_EVENT_TABLE()
 };

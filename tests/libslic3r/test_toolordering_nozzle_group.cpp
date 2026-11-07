@@ -1,5 +1,11 @@
+#include <boost/filesystem/operations.hpp>
 #include <catch2/catch_all.hpp>
 
+#include <catch2/catch_message.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
 #include "libslic3r/FilamentGroupUtils.hpp"
 #include "libslic3r/MultiNozzleUtils.hpp"
 #include "libslic3r/PrintConfig.hpp"
@@ -8,13 +14,22 @@
 #include "libslic3r/Print.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 
+#include "test_utils.hpp"
+
 #include <algorithm>
+#include "libslic3r/Config.hpp"
+#include "libslic3r/GCode/ToolOrderUtils.hpp"
+#include "libslic3r/PrintBase.hpp"
+#include <cstddef>
 #include <map>
+#include <memory>
 #include <set>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
 #include <boost/filesystem.hpp>
+#include "libslic3r/Point.hpp"
 
 // H2C/A2L multi-nozzle filament grouping core.
 //
@@ -159,6 +174,188 @@ TEST_CASE("H2C multi-nozzle: filaments get distinct nozzles on the 6-nozzle extr
         REQUIRE(first->extruder_id == 1);
         REQUIRE(first->group_id == group.get_nozzle_id(f));
     }
+}
+
+TEST_CASE("Grouping context spans the filament count with mis-sized config arrays", "[ToolOrdering][H2C]")
+{
+    // FilamentGroup indexes the grouping context's filament_info by filament id, so a short
+    // per-filament array must not shorten it: the reads run off the end.
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    // Single 6-nozzle extruder: opens the grouping engine without needing a BBL multi-extruder.
+    config.option<ConfigOptionFloats>("nozzle_diameter", true)->values = {0.4};
+    config.option<ConfigOptionIntsNullable>("extruder_max_nozzle_count", true)->values = {6};
+    config.option<ConfigOptionStrings>("extruder_nozzle_stats", true)->values = {"Standard#6"};
+
+    // Four filaments, with filament_type / filament_is_support left short on purpose.
+    config.option<ConfigOptionStrings>("filament_colour", true)->values = {"#FF0000", "#00FF00", "#0000FF", "#FFFF00"};
+    config.option<ConfigOptionStrings>("filament_type", true)->values = {"PLA"};
+    config.option<ConfigOptionBools>("filament_is_support", true)->values = {0};
+    config.option<ConfigOptionFloats>("filament_diameter", true)->values = {1.75, 1.75, 1.75, 1.75};
+    config.option<ConfigOptionInts>("filament_map", true)->values = {1, 1, 1, 1};
+    config.option<ConfigOptionFloats>("flush_volumes_matrix", true)->values = std::vector<double>(16, 140.);
+    config.option<ConfigOptionFloats>("flush_multiplier", true)->values = {1.};
+
+    Model model;
+    model.add_object("cube", "", make_cube(20, 20, 20))->add_instance();
+
+    Print print;
+    print.apply(model, config);
+    // apply() does not pad the per-filament arrays, so the mis-sizing survives into the engine.
+    REQUIRE(print.config().filament_type.values.size() < print.config().filament_colour.values.size());
+
+    std::vector<std::vector<unsigned int>> layer_filaments = {{0, 1}, {1, 2}, {2, 3}};
+
+    SECTION("short per-filament arrays still yield one entry per filament") {
+        auto result = ToolOrdering::get_recommended_filament_maps(layer_filaments, &print, FilamentMapMode::fmmAutoForFlush, {}, {});
+        REQUIRE(result.get_extruder_map(false).size() == 4);
+        for (int f = 0; f < 4; ++f)
+            REQUIRE(result.get_extruder_id(f) == 0);
+    }
+
+    SECTION("filament_ids longer than the filament count is truncated, not paired past the end") {
+        config.option<ConfigOptionStrings>("filament_ids", true)->values = {"a", "b", "c", "d", "e", "f"};
+        print.apply(model, config);
+        auto result = ToolOrdering::get_recommended_filament_maps(layer_filaments, &print, FilamentMapMode::fmmAutoForFlush, {}, {});
+        REQUIRE(result.get_extruder_map(false).size() == 4);
+    }
+}
+
+namespace {
+// A filament the printer reports loaded, in the form Plater hands to Print::set_extruder_filament_info.
+DynamicPrintConfig loaded_filament(const std::string &colour, const std::string &type, const std::string &tray_name,
+                                   const std::string &filament_id = "")
+{
+    DynamicPrintConfig tray;
+    tray.set_key_value("filament_colour", new ConfigOptionStrings{colour});
+    tray.set_key_value("filament_type", new ConfigOptionStrings{type});
+    tray.set_key_value("tray_name", new ConfigOptionStrings{tray_name});
+    tray.set_key_value("filament_is_support", new ConfigOptionBools{false});
+    tray.set_key_value("filament_id", new ConfigOptionStrings{filament_id});
+    return tray;
+}
+
+// A two-extruder Bambu printer whose master is the second extruder, as on the H2D (one nozzle on
+// each extruder) and the H2C (six on the second), printing PLA in the given colours. A change
+// between two of them flushes extruder_flush[e] on extruder e.
+DynamicPrintConfig master_second_extruder_config(int second_extruder_nozzles, const std::vector<std::string> &colours,
+                                                 const std::vector<double> &extruder_flush = {100., 100.})
+{
+    const size_t n = colours.size();
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.option<ConfigOptionFloats>("nozzle_diameter", true)->values = {0.4, 0.4};
+    config.option<ConfigOptionIntsNullable>("extruder_max_nozzle_count", true)->values = {1, second_extruder_nozzles};
+    config.option<ConfigOptionStrings>("extruder_nozzle_stats", true)->values = {"Standard#1", "Standard#" + std::to_string(second_extruder_nozzles)};
+    config.option<ConfigOptionEnumsGeneric>("extruder_type", true)->values = {etDirectDrive, etDirectDrive};
+    config.option<ConfigOptionEnumsGeneric>("nozzle_volume_type", true)->values = {nvtStandard, nvtStandard};
+    config.option<ConfigOptionStrings>("extruder_ams_count", true)->values = {"1#0|4#1", "1#0|4#1"};
+    config.option<ConfigOptionInt>("master_extruder_id", true)->value = 2;
+    config.option<ConfigOptionFloat>("machine_load_filament_time", true)->value = 29.;
+    config.option<ConfigOptionFloat>("machine_unload_filament_time", true)->value = 29.;
+
+    config.option<ConfigOptionStrings>("filament_colour", true)->values = colours;
+    config.option<ConfigOptionStrings>("filament_type", true)->values = std::vector<std::string>(n, "PLA");
+    config.option<ConfigOptionBools>("filament_is_support", true)->values = std::vector<unsigned char>(n, 0);
+    config.option<ConfigOptionFloats>("filament_diameter", true)->values = std::vector<double>(n, 1.75);
+    config.option<ConfigOptionInts>("filament_map", true)->values = std::vector<int>(n, 2);
+    // One n x n matrix per extruder.
+    std::vector<double> flush;
+    for (int extruder = 0; extruder < 2; ++extruder)
+        for (size_t from = 0; from < n; ++from)
+            for (size_t to = 0; to < n; ++to)
+                flush.push_back(from == to ? 0. : extruder_flush[extruder]);
+    config.option<ConfigOptionFloats>("flush_volumes_matrix", true)->values = flush;
+    config.option<ConfigOptionFloats>("flush_multiplier", true)->values = {1., 1.};
+    return config;
+}
+} // namespace
+
+TEST_CASE("Filament-saving grouping puts a filament on the extruder the printer has it loaded in", "[ToolOrdering]")
+{
+    Model model;
+    model.add_object("cube", "", make_cube(20, 20, 20))->add_instance();
+    Print print;
+    print.apply(model, master_second_extruder_config(1, {"#F98C36"}));
+    print.is_BBL_printer() = true;
+    // Only the first (non-master) extruder holds the printed PLA.
+    print.set_extruder_filament_info({{loaded_filament("#F98C36", "PLA", "A1"), loaded_filament("#BCBCBC", "PETG", "A2")},
+                                      {loaded_filament("#F95D73", "PETG", "Ext")}});
+
+    auto result = ToolOrdering::get_recommended_filament_maps({{0}, {0}, {0}}, &print, FilamentMapMode::fmmAutoForFlush, {}, {});
+
+    REQUIRE(result.get_extruder_id(0) == 0);
+}
+
+TEST_CASE("Filament-saving grouping keeps a lone filament on the master extruder when the printer reports none", "[ToolOrdering]")
+{
+    Model model;
+    model.add_object("cube", "", make_cube(20, 20, 20))->add_instance();
+    Print print;
+    print.apply(model, master_second_extruder_config(1, {"#F98C36"}));
+    print.is_BBL_printer() = true;
+
+    auto result = ToolOrdering::get_recommended_filament_maps({{0}, {0}, {0}}, &print, FilamentMapMode::fmmAutoForFlush, {}, {});
+
+    REQUIRE(result.get_extruder_id(0) == 1);
+}
+
+TEST_CASE("Filament-saving grouping prefers the master extruder when the printer's filaments match no grouping better", "[ToolOrdering]")
+{
+    // Three PLAs in turn, flushing far less on the first extruder: the least-flush grouping puts two
+    // of them there, and the master preference swaps the groups. The printer holds only PETG, so
+    // neither grouping matches it better and the swap stands.
+    Model model;
+    model.add_object("cube", "", make_cube(20, 20, 20))->add_instance();
+    Print print;
+    print.apply(model, master_second_extruder_config(1, {"#FFFFFF", "#000000", "#808080"}, {10., 100.}));
+    print.is_BBL_printer() = true;
+    print.set_extruder_filament_info({{loaded_filament("#FF0000", "PETG", "A1")}, {loaded_filament("#F95D73", "PETG", "Ext")}});
+
+    auto result = ToolOrdering::get_recommended_filament_maps({{0}, {1}, {2}, {0}, {1}, {2}}, &print, FilamentMapMode::fmmAutoForFlush, {}, {});
+
+    int on_master = 0;
+    for (int f = 0; f < 3; ++f)
+        on_master += result.get_extruder_id(f) == 1;
+    REQUIRE(on_master == 2);
+}
+
+TEST_CASE("Convenience-mode grouping puts a filament where the printer holds its sub-type", "[ToolOrdering][H2C]")
+{
+    // Both extruders hold white PLA; only the second one's is the project filament's sub-type. One
+    // nozzle on the second extruder runs the two-extruder match; six run the multi-nozzle one.
+    const int second_extruder_nozzles = GENERATE(1, 6);
+    DynamicPrintConfig config = master_second_extruder_config(second_extruder_nozzles, {"#FFFFFF"});
+    config.option<ConfigOptionStrings>("filament_ids", true)->values = {"GFA00"};
+    Model model;
+    model.add_object("cube", "", make_cube(20, 20, 20))->add_instance();
+    Print print;
+    print.apply(model, config);
+    print.is_BBL_printer() = true;
+    print.set_extruder_filament_info({{loaded_filament("#FFFFFF", "PLA", "A1", "GFL99")},
+                                      {loaded_filament("#FFFFFF", "PLA", "A1", "GFA00")}});
+
+    auto result = ToolOrdering::get_recommended_filament_maps({{0}, {0}, {0}}, &print, FilamentMapMode::fmmAutoForMatch, {}, {});
+
+    INFO("Nozzles on the second extruder: " << second_extruder_nozzles);
+    REQUIRE(result.get_extruder_id(0) == 1);
+}
+
+TEST_CASE("Filament-saving grouping on a multi-nozzle printer keeps filaments on the extruder the printer has them loaded in", "[ToolOrdering][H2C]")
+{
+    // On the H2C layout the master preference would move both filaments to the master's first two
+    // nozzles, so choosing between that and the printer's match resolves nozzle ids past one per
+    // extruder.
+    Model model;
+    model.add_object("cube", "", make_cube(20, 20, 20))->add_instance();
+    Print print;
+    print.apply(model, master_second_extruder_config(6, {"#F98C36", "#FFFFFF"}));
+    print.is_BBL_printer() = true;
+    print.set_extruder_filament_info({{loaded_filament("#F98C36", "PLA", "A1"), loaded_filament("#FFFFFF", "PLA", "A2")},
+                                      {loaded_filament("#F95D73", "PETG", "Ext")}});
+
+    auto result = ToolOrdering::get_recommended_filament_maps({{0}, {1}, {0}}, &print, FilamentMapMode::fmmAutoForFlush, {}, {});
+
+    REQUIRE(result.get_extruder_id(0) == 0);
+    REQUIRE(result.get_extruder_id(1) == 0);
 }
 
 TEST_CASE("H2C dynamic selector: per-layer nozzle ids reach the g-code surface", "[ToolOrdering][H2C][Dynamic]")
@@ -464,6 +661,22 @@ TEST_CASE("Print config-index resolvers pick per-filament Hybrid slots", "[Print
     }
 }
 
+TEST_CASE("Regrouping or rewriting the filament maps changes the config-index generation", "[Print][H2C]")
+{
+    Model model;
+    model.add_object("cube", "", make_cube(20, 20, 20))->add_instance();
+    Print print;
+    print.apply(model, DynamicPrintConfig::full_print_config());
+
+    size_t generation = print.config_index_generation();
+    print.set_nozzle_group_result(nullptr);
+    REQUIRE(print.config_index_generation() != generation);
+
+    generation = print.config_index_generation();
+    print.update_filament_maps_to_config({1}, {(int) nvtStandard}, {0});
+    REQUIRE(print.config_index_generation() != generation);
+}
+
 TEST_CASE("Re-applying an unchanged config after slicing keeps the result valid", "[Print][H2C]")
 {
     // apply() rebuilds m_config.filament_map_2 to the real per-filament slot map, while the
@@ -498,6 +711,52 @@ TEST_CASE("Re-applying an unchanged config after slicing keeps the result valid"
     auto status = print.apply(model, config);
     REQUIRE(status != PrintBase::APPLY_STATUS_INVALIDATED);
     REQUIRE(print.is_step_done(psSlicingFinished));
+}
+
+TEST_CASE("A degenerate process variant map on a custom multi-extruder printer slices to a stable result", "[Print][Regression]")
+{
+    // Non-BBL multi-extruder printers get machine-scope variant columns synthesized on preset
+    // load (extend_extruder_variant), but nothing ships process-scope print_extruder_id /
+    // print_extruder_variant: presets and 3mf project configs carry the length-1 defaults. The
+    // apply-time expansion must synthesize the process columns from extruder_variant_list;
+    // otherwise the failed per-extruder lookups collapse the per-extruder retract overrides
+    // during slicing and the post-slice re-apply invalidates every fresh result, forever.
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_num_extruders(5);
+    config.option<ConfigOptionFloats>("nozzle_diameter", true)->values = {0.4, 0.4, 0.4, 0.4, 0.4};
+    // per-extruder machine values that a first-slot collapse would destroy
+    config.option<ConfigOptionPercents>("retract_before_wipe", true)->values = {100., 70., 70., 70., 100.};
+    config.option<ConfigOptionEnumsGeneric>("z_hop_types", true)->values = {zhtSlope, zhtNormal, zhtNormal, zhtNormal, zhtSlope};
+    // filament presets carry the nullable override twins (all-nil = "no override"); they are what
+    // routes the machine values through apply_override in the in-slice override recompute
+    config.option<ConfigOptionPercentsNullable>("filament_retract_before_wipe", true)->values =
+        std::vector<double>(5, ConfigOptionPercentsNullable::nil_value());
+    config.option<ConfigOptionEnumsGenericNullable>("filament_z_hop_types", true)->values =
+        std::vector<int>(5, ConfigOptionEnumsGenericNullable::nil_value());
+    config.option<ConfigOptionFloats>("filament_diameter", true)->values = std::vector<double>(5, 1.75);
+    config.option<ConfigOptionStrings>("filament_colour", true)->values = {"#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#00FFFF"};
+    config.option<ConfigOptionInts>("filament_map", true)->values = {1, 2, 3, 4, 1};
+
+    Model model;
+    model.add_object("cube", "", make_cube(20, 20, 20))->add_instance()->set_offset(Vec3d(100., 100., 0.));
+
+    Print print;
+    print.apply(model, config);
+    print.process();
+    REQUIRE(print.is_step_done(psSlicingFinished));
+
+    // BackgroundSlicingProcess reads the engine-computed maps back into the plate config after
+    // slicing; the next apply overlays that written-back state.
+    config.option<ConfigOptionInts>("filament_map", true)->values = print.get_filament_maps();
+    config.option<ConfigOptionInts>("filament_volume_map", true)->values = print.get_filament_volume_maps();
+    config.option<ConfigOptionInts>("filament_nozzle_map", true)->values = print.get_filament_nozzle_maps();
+
+    auto status = print.apply(model, config);
+    REQUIRE(status == PrintBase::APPLY_STATUS_UNCHANGED);
+    REQUIRE(print.is_step_done(psSlicingFinished));
+    // the per-extruder machine values must survive the in-slice override recompute
+    REQUIRE(print.config().retract_before_wipe.values == std::vector<double>({100., 70., 70., 70., 100.}));
+    REQUIRE(print.config().z_hop_types.values == std::vector<int>({zhtSlope, zhtNormal, zhtNormal, zhtNormal, zhtSlope}));
 }
 
 TEST_CASE("normalize_nozzle_map_per_layer makes per-filament assignments gap-free", "[MultiNozzle][H2C][Dynamic]")
@@ -662,10 +921,9 @@ TEST_CASE("Sequential selector prints publish a stitched result and cache the pl
     REQUIRE(print.config().filament_self_index.values.size() >= print.config().filament_map.values.size());
 
     // Export must consume the cached plans and produce g-code without throwing.
-    boost::filesystem::path gcode_path = boost::filesystem::temp_directory_path() / "orca_seq_dynamic_publish_test.gcode";
-    REQUIRE_NOTHROW(print.export_gcode(gcode_path.string(), nullptr, nullptr));
-    REQUIRE(boost::filesystem::exists(gcode_path));
-    boost::filesystem::remove(gcode_path);
+    ScopedTemporaryFile gcode(".gcode");
+    REQUIRE_NOTHROW(print.export_gcode(gcode.string(), nullptr, nullptr));
+    REQUIRE(boost::filesystem::exists(gcode.path()));
 }
 
 TEST_CASE("Per-variant expansion gives migrating filaments one slot per variant", "[PrintConfig][H2C][Dynamic]")
@@ -857,6 +1115,9 @@ TEST_CASE("Filaments ordered after a migrator shift columns and the resolver tra
     config.option<ConfigOptionInts>("nozzle_temperature", true)->values = {200, 210, 220, 230, 240, 250};
     config.option<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = {0.5, 0.5, 0.7, 0.9, 1.4, 1.4};
     config.option<ConfigOptionFloats>("retraction_length", true)->values = {0.8, 0.9, 1.0, 1.1};
+    config.option<ConfigOptionFloats>("fan_max_speed", true)->values = {10, 10, 20, 60, 30, 30};
+    config.option<ConfigOptionInts>("additional_cooling_fan_speed", true)->values = {1, 1, 2, 6, 3, 3};
+    config.option<ConfigOptionInts>("nozzle_temperature_range_high", true)->values = {230, 230, 240, 280, 250, 250};
 
     Model model;
     model.add_object("cube", "", make_cube(20, 20, 20))->add_instance();
@@ -897,6 +1158,21 @@ TEST_CASE("Filaments ordered after a migrator shift columns and the resolver tra
     REQUIRE(merged.size() == 4);
     REQUIRE_THAT(merged[3], Catch::Matchers::WithinAbs(1.4, 1e-9));
     REQUIRE_THAT(merged[2], Catch::Matchers::WithinAbs(0.9, 1e-9));
+
+    // The cooling and temperature range options follow the variant as well.
+    const PrintConfig &resolved = print.config();
+    REQUIRE(resolved.fan_max_speed.values == std::vector<double>{10, 20, 60, 30});
+    CHECK(resolved.fan_max_speed.get_at(print.get_filament_config_indx(1, 0)) == 20);
+    CHECK(resolved.fan_max_speed.get_at(print.get_filament_config_indx(1, 1)) == 60);
+    CHECK(resolved.additional_cooling_fan_speed.get_at(print.get_filament_config_indx(2, 1)) == 3);
+    CHECK(resolved.nozzle_temperature_range_high.get_at(print.get_filament_config_indx(2, 1)) == 250);
+    // The auxiliary fan maximum takes every variant of the filaments used, and only theirs.
+    ToolOrdering ordering;
+    ordering.layer_tools().emplace_back(0.2);
+    ordering.layer_tools().back().extruders = {0, 2};
+    CHECK(ordering.cal_max_additional_fan(resolved) == 3);
+    ordering.layer_tools().back().extruders = {1};
+    CHECK(ordering.cal_max_additional_fan(resolved) == 6);
 }
 
 TEST_CASE("Selector slicing keeps the result valid across re-apply", "[Print][H2C][Dynamic]")
@@ -933,4 +1209,42 @@ TEST_CASE("Selector slicing keeps the result valid across re-apply", "[Print][H2
     auto status = print.apply(model, config);
     REQUIRE(status != PrintBase::APPLY_STATUS_INVALIDATED);
     REQUIRE(print.is_step_done(psSlicingFinished));
+}
+
+TEST_CASE("parse_cyclic_order parses user cyclic toolchange sequences", "[ToolOrdering][Cyclic]")
+{
+    // Filament numbers are 1-based in the UI; the parser returns 0-based indices.
+    SECTION("well-formed sequence") {
+        REQUIRE(parse_cyclic_order("3,2,1,4", 4) == std::vector<unsigned int>({2, 1, 0, 3}));
+    }
+
+    SECTION("surrounding whitespace is tolerated") {
+        REQUIRE(parse_cyclic_order(" 3 , 2 ,1, 4 ", 4) == std::vector<unsigned int>({2, 1, 0, 3}));
+    }
+
+    SECTION("out-of-range and non-positive entries are dropped") {
+        // 0 is below the 1-based range, 5 is above it for a 4-filament setup, -1 is invalid.
+        REQUIRE(parse_cyclic_order("0,5,-1,2", 4) == std::vector<unsigned int>({1}));
+    }
+
+    SECTION("duplicates keep only the first occurrence") {
+        REQUIRE(parse_cyclic_order("2,2,1,2", 4) == std::vector<unsigned int>({1, 0}));
+    }
+
+    SECTION("garbage tokens are ignored") {
+        REQUIRE(parse_cyclic_order("3,abc,,2,x1", 4) == std::vector<unsigned int>({2, 1}));
+    }
+
+    SECTION("tokens that only start with a number are ignored") {
+        // "2x" must be dropped rather than parsed as filament 2.
+        REQUIRE(parse_cyclic_order("3,2x,1", 4) == std::vector<unsigned int>({2, 0}));
+    }
+
+    SECTION("empty string yields an empty order") {
+        REQUIRE(parse_cyclic_order("", 4).empty());
+    }
+
+    SECTION("a partial sequence only names the filaments it lists") {
+        REQUIRE(parse_cyclic_order("3,1", 4) == std::vector<unsigned int>({2, 0}));
+    }
 }
