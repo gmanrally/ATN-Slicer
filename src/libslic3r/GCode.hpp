@@ -161,7 +161,8 @@ private:
     std::string append_tcr(GCode &gcodegen, const WipeTower::ToolChangeResult &tcr, int new_extruder_id, double z = -1.) const;
     std::string tower_height_tag(GCode &gcodegen, const WipeTower::ToolChangeResult &tcr, const std::string &tcr_gcode) const;
     Polyline generate_path_to_wipe_tower(const Point &start_pos, const Point &end_pos, const BoundingBox &avoid_polygon, const Polygons &bed_polygons) const;
-    std::string append_tcr2(GCode &gcodegen, const WipeTower::ToolChangeResult &tcr, int new_extruder_id, double z = -1.) const;
+    std::string append_tcr2(GCode &gcodegen, const WipeTower::ToolChangeResult &tcr, int new_extruder_id,
+                           double z = -1., std::optional<double> object_z = std::nullopt) const;
     std::string travel_to_tower_gap(GCode &gcodegen, const Point &route_start, const Point &start_wipe_pos) const;
     Vec2f transform_wt2_pt(const Vec2f &pt) const;
     Polygons shared_printable_area(GCode &gcodegen) const;
