@@ -314,9 +314,14 @@ std::vector<double> adaptive_fill_line_spacing(const PrintObject &print_object)
                 return region_id < layer->regions().size() && ! layer->regions()[region_id]->fill_surfaces.empty();
             }))
             continue;
-        double extrusion_width = config.sparse_infill_line_width.get_abs_value(max_nozzle_diameter);
+        // Bambu Studio 2.9 mixed diameters: the infill nozzle is the one printing this region's sparse infill.
+        const PrintConfig &print_config = print_object.print()->config();
+        const double infill_nozzle = print_config.multi_nozzle_diameter_mode.value ?
+            nozzle_diameter_for_filament(print_config, config.sparse_infill_filament_id.value, true) : max_nozzle_diameter;
+        double extrusion_width = Flow::extrusion_width_for_nozzle(config.sparse_infill_line_width, float(primary_nozzle_diameter(print_config)),
+                                                                  float(infill_nozzle), print_config.multi_nozzle_diameter_mode.value);
         if (extrusion_width == 0.)
-            extrusion_width = default_infill_extrusion_width;
+            extrusion_width = Flow::auto_extrusion_width(FlowRole::frInfill, float(infill_nozzle));
         line_spacing[region_id] = extrusion_width / ((config.sparse_infill_density / 100.0f) * 0.333333333f) * config.fill_multiline.value;
     }
     return line_spacing;

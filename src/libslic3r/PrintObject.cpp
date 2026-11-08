@@ -2081,6 +2081,8 @@ bool PrintObject::invalidate_all_steps()
 // stBottom       - Part of a region, which is not supported by the same region, but it is supported either by another region, or by a soluble interface layer.
 // stInternal     - Part of a region, which is supported by the same region type.
 // If a part of a region is of stBottom and stTop, the stBottom wins.
+static int effective_wall_loops(const PrintObject &object, const PrintRegionConfig &config);
+
 void PrintObject::detect_surfaces_type()
 {
     BOOST_LOG_TRIVIAL(info) << "Detecting solid surfaces..." << log_memory_info();
@@ -2268,8 +2270,8 @@ void PrintObject::detect_surfaces_type()
                         const ExPolygons T = union_ex(to_expolygons(top));
                         // Walls are laid out on spacing, not width; and only_one_wall_top leaves a single wall over
                         // a top surface, which is exactly the situation handled here.
-                        const int    wall_loops = region_config.only_one_wall_top.value ? std::min(region_config.wall_loops.value, 1)
-                                                                                        : region_config.wall_loops.value;
+                        const int    region_wall_loops = effective_wall_loops(*this, region_config);
+                        const int    wall_loops = region_config.only_one_wall_top.value ? std::min(region_wall_loops, 1) : region_wall_loops;
                         const double wall_band  = wall_loops <= 0 ? 0. :
                             double(layerm->flow(frExternalPerimeter).scaled_width()) +
                             double(layerm->flow(frPerimeter).scaled_spacing()) * double(wall_loops - 1);
@@ -2647,10 +2649,44 @@ void PrintObject::process_external_surfaces()
     BOOST_LOG_TRIVIAL(debug) << "Processing external surfaces in parallel - end";
 }
 
+// Bambu Studio 2.9 mixed diameters: the shell counts and thicknesses follow the nozzle laying the solid infill.
+static double shell_nozzle_diameter(const PrintObject &object, const PrintRegionConfig &config)
+{
+    return nozzle_diameter_for_filament(object.print()->config(), config.internal_solid_filament_id.value, true);
+}
+
+static int effective_shell_layers(const PrintObject &object, const PrintRegionConfig &config, bool top)
+{
+    const int layers = top ? config.top_shell_layers.value : config.bottom_shell_layers.value;
+    if (layers <= 0 || ! object.print()->config().multi_nozzle_diameter_mode.value)
+        return layers;
+    const double nozzle = shell_nozzle_diameter(object, config);
+    return top ? multi_nozzle_top_shell_layers(nozzle, layers) : multi_nozzle_bottom_shell_layers(nozzle, layers);
+}
+
+static double effective_shell_thickness(const PrintObject &object, const PrintRegionConfig &config, bool top)
+{
+    const double thickness = top ? config.top_shell_thickness.value : config.bottom_shell_thickness.value;
+    if (! object.print()->config().multi_nozzle_diameter_mode.value)
+        return thickness;
+    const double nozzle = shell_nozzle_diameter(object, config);
+    return top ? multi_nozzle_top_shell_thickness(nozzle, thickness) : multi_nozzle_bottom_shell_thickness(nozzle, thickness);
+}
+
+// Bambu Studio 2.9 mixed diameters: the wall count follows the nozzle printing the walls.
+static int effective_wall_loops(const PrintObject &object, const PrintRegionConfig &config)
+{
+    const int loops = config.wall_loops.value;
+    const PrintConfig &print_config = object.print()->config();
+    if (! print_config.multi_nozzle_diameter_mode.value)
+        return loops;
+    return multi_nozzle_wall_loops(nozzle_diameter_for_filament(print_config, config.inner_wall_filament_id.value, true), loops);
+}
+
 // Shell counts refer to deposited layers, while shell discovery operates on the fine grid.
 static int shell_layers_on_grid(const PrintObject &object, const PrintRegionConfig &config, bool top)
 {
-    const int layers = top ? config.top_shell_layers.value : config.bottom_shell_layers.value;
+    const int layers = effective_shell_layers(object, config, top);
     if (layers <= 0 || !has_extruder_layer_heights(object))
         return layers;
     const unsigned int filament = top ? config.top_surface_filament_id.value : config.bottom_surface_filament_id.value;
@@ -2740,7 +2776,7 @@ void PrintObject::discover_vertical_shells()
                                 unsigned int perimeters = 0;
                                 for (const Surface &s : layerm.slices.surfaces)
                                     perimeters = std::max<unsigned int>(perimeters, s.extra_perimeters);
-                                perimeters += layerm.region().config().wall_loops.value;
+                                perimeters += effective_wall_loops(*this, layerm.region().config());
                                 // Then calculate the infill offset.
                                 if (perimeters > 0) {
                                     Flow extflow = layerm.flow(frExternalPerimeter);
@@ -2785,8 +2821,8 @@ void PrintObject::discover_vertical_shells()
         Polygons        holes;
     };
     const auto accumulation_key = [this](const PrintRegionConfig &region_config, const LayerRegion *layerm) {
-        return AccumulationKey{ double(shell_layers_on_grid(*this, region_config, true)), region_config.top_shell_thickness.value,
-                                double(shell_layers_on_grid(*this, region_config, false)), region_config.bottom_shell_thickness.value,
+        return AccumulationKey{ double(shell_layers_on_grid(*this, region_config, true)), effective_shell_thickness(*this, region_config, true),
+                                double(shell_layers_on_grid(*this, region_config, false)), effective_shell_thickness(*this, region_config, false),
                                 double(layerm->flow(frExternalPerimeter).scaled_spacing()) };
     };
     const auto accumulate_shell = [this, &cache_top_botom_regions](size_t idx_layer, const PrintRegionConfig &region_config,
@@ -2817,7 +2853,7 @@ void PrintObject::discover_vertical_shells()
                             int itop = int(idx_layer) + n_top_layers;
                             bool at_least_one_top_projected = false;
     	                    for (; i < int(cache_top_botom_regions.size()) &&
-    	                         (i < itop || m_layers[i]->print_z - print_z < region_config.top_shell_thickness - EPSILON);
+    	                         (i < itop || m_layers[i]->print_z - print_z < effective_shell_thickness(*this, region_config, true) - EPSILON);
     	                        ++ i) {
                                 at_least_one_top_projected = true;
     	                        const DiscoverVerticalShellsCacheEntry &cache = cache_top_botom_regions[i];
@@ -2836,7 +2872,7 @@ void PrintObject::discover_vertical_shells()
 
                             if (one_more_layer_below_top_bottom_surfaces)
                                 if (i < int(cache_top_botom_regions.size()) &&
-                                    (i <= itop || m_layers[i]->bottom_z() - print_z < region_config.top_shell_thickness - EPSILON))
+                                    (i <= itop || m_layers[i]->bottom_z() - print_z < effective_shell_thickness(*this, region_config, true) - EPSILON))
                                     combine_holes(cache_top_botom_regions[i].holes);
     	                }
                         if (int n_bottom_layers = shell_layers_on_grid(*this, region_config, false); n_bottom_layers > 0) {
@@ -2846,7 +2882,7 @@ void PrintObject::discover_vertical_shells()
                             int ibottom = int(idx_layer) - n_bottom_layers;
                             bool at_least_one_bottom_projected = false;
     	                    for (; i >= 0 &&
-    	                         (i > ibottom || bottom_z - m_layers[i]->bottom_z() < region_config.bottom_shell_thickness - EPSILON);
+    	                         (i > ibottom || bottom_z - m_layers[i]->bottom_z() < effective_shell_thickness(*this, region_config, false) - EPSILON);
     	                        -- i) {
                                     at_least_one_bottom_projected = true;
     	                        const DiscoverVerticalShellsCacheEntry &cache = cache_top_botom_regions[i];
@@ -2863,7 +2899,7 @@ void PrintObject::discover_vertical_shells()
 
                             if (one_more_layer_below_top_bottom_surfaces)
                                 if (i >= 0 &&
-                                    (i > ibottom || bottom_z - m_layers[i]->print_z < region_config.bottom_shell_thickness - EPSILON))
+                                    (i > ibottom || bottom_z - m_layers[i]->print_z < effective_shell_thickness(*this, region_config, false) - EPSILON))
                                     combine_holes(cache_top_botom_regions[i].holes);
     	                }
     };
@@ -4968,9 +5004,9 @@ void PrintObject::discover_horizontal_shells()
                 for (int n = (type == stTop) ? int(i) - 1 : int(i) + 1;
                 	(type == stTop) ?
                 		(n >= 0                   && (int(i) - n < num_solid_layers ||
-                								 	  print_z - m_layers[n]->print_z < region_config.top_shell_thickness.value - EPSILON)) :
+                								 	  print_z - m_layers[n]->print_z < effective_shell_thickness(*this, region_config, true) - EPSILON)) :
                 		(n < int(m_layers.size()) && (n - int(i) < num_solid_layers ||
-                									  m_layers[n]->bottom_z() - bottom_z < region_config.bottom_shell_thickness.value - EPSILON));
+                									  m_layers[n]->bottom_z() - bottom_z < effective_shell_thickness(*this, region_config, false) - EPSILON));
                 	(type == stTop) ? -- n : ++ n)
                 {
 //                    Slic3r::debugf "  looking for neighbors on layer %d...\n", $n;

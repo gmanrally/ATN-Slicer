@@ -1334,6 +1334,21 @@ void Print::update_shrinkage_compensation(size_t num_extruders, std::vector<int>
         set_compensation(extruders.front());
 }
 
+// Bambu Studio 2.9 mixed diameters: the support gaps are resolved per nozzle. A zero gap is the soluble / zero-gap
+// interface contract and is never replaced; Bambu Studio additionally keeps a zero gap for known material pairs.
+static void apply_multi_diameter_object_tuning(const PrintConfig &print_config, PrintObjectConfig &config)
+{
+    if (! print_config.multi_nozzle_diameter_mode.value)
+        return;
+    const int support_filament = config.support_interface_filament.value > 0 ? config.support_interface_filament.value :
+                                                                               config.support_filament.value;
+    const double nozzle_diameter = nozzle_diameter_for_filament(print_config, support_filament, true);
+    if (config.support_top_z_distance.value > EPSILON)
+        config.support_top_z_distance.value = multi_nozzle_support_z_distance(nozzle_diameter, config.support_top_z_distance.value);
+    if (config.support_bottom_z_distance.value > EPSILON)
+        config.support_bottom_z_distance.value = multi_nozzle_support_z_distance(nozzle_diameter, config.support_bottom_z_distance.value);
+}
+
 Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_config, bool extruder_applied)
 {
 #ifdef _DEBUG
@@ -1896,6 +1911,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 				model_object.config.assign_config(model_object_new.config);
             if (! object_diff.empty() || object_config_changed || num_extruders_changed ) {
                 PrintObjectConfig new_config = PrintObject::object_config_from_model_object(m_default_object_config, model_object, num_extruders, print_variant_index);
+                apply_multi_diameter_object_tuning(m_config, new_config);
                 for (const PrintObjectStatus &print_object_status : print_object_status_db.get_range(model_object)) {
                     t_config_option_keys diff = print_object_status.print_object->config().diff(new_config);
                     if (! diff.empty()) {
@@ -1969,9 +1985,13 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             // Producing the config for PrintObject on demand, caching it at print_object_last.
             const PrintObject *print_object_last = nullptr;
             auto print_object_apply_config = [this, &print_object_last, model_object, num_extruders, &print_variant_index](PrintObject *print_object) {
-                print_object->config_apply(print_object_last ?
-                    print_object_last->config() :
-                    PrintObject::object_config_from_model_object(m_default_object_config, *model_object, num_extruders, print_variant_index));
+                if (print_object_last) {
+                    print_object->config_apply(print_object_last->config());
+                } else {
+                    PrintObjectConfig new_config = PrintObject::object_config_from_model_object(m_default_object_config, *model_object, num_extruders, print_variant_index);
+                    apply_multi_diameter_object_tuning(m_config, new_config);
+                    print_object->config_apply(new_config);
+                }
                 print_object_last = print_object;
             };
             if (old.empty()) {

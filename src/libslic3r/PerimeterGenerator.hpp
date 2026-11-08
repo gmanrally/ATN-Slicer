@@ -164,6 +164,9 @@ public:
     Polygons    lower_slices_polygons() const { return m_lower_slices_polygons; }
     // ORCA: the slices less the slivers the wall generator prints nothing for, so they never count as support.
     ExPolygons  printable_slices(const ExPolygons &slices) const;
+    // Bambu Studio 2.9 mixed diameters: wall count and infill nozzle resolved for the nozzles that print this region.
+    int    effective_wall_loops() const;
+    double infill_nozzle_diameter(double fallback) const;
     // ORCA: whether this layer prints its outer walls first for the brim, see brim_puts_outer_walls_first().
     bool        outer_walls_first_for_brim() const;
 

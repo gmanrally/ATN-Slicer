@@ -664,8 +664,11 @@ std::vector<unsigned int> ToolOrdering::generate_first_layer_tool_order(const Pr
             int extruder_id = layerm->region().config().option("outer_wall_filament_id")->getInt();
 
             for (auto expoly : layerm->raw_slices) {
-                const double nozzle_diameter = print.config().nozzle_diameter.get_at(0);
-                const coordf_t initial_layer_line_width = print.config().get_abs_value("initial_layer_line_width", nozzle_diameter);
+                // Bambu Studio 2.9 mixed diameters: the first-layer wall width follows the nozzle printing the outer wall.
+                const double nozzle_diameter = print.config().multi_nozzle_diameter_mode.value ?
+                    nozzle_diameter_for_filament(print.config(), extruder_id, true) : print.config().nozzle_diameter.get_at(0);
+                const coordf_t initial_layer_line_width = Flow::extrusion_width_for_nozzle(print.config().initial_layer_line_width,
+                    float(primary_nozzle_diameter(print.config())), float(nozzle_diameter), print.config().multi_nozzle_diameter_mode.value);
 
                 if (offset_ex(expoly, -0.2 * scale_(initial_layer_line_width)).empty())
                     continue;
@@ -727,8 +730,11 @@ std::vector<unsigned int> ToolOrdering::generate_first_layer_tool_order(const Pr
     for (auto layerm : target_layer->regions()) {
         int extruder_id = layerm->region().config().option("outer_wall_filament_id")->getInt();
         for (auto expoly : layerm->raw_slices) {
-            const double nozzle_diameter = object.print()->config().nozzle_diameter.get_at(0);
-            const coordf_t line_width = object.config().get_abs_value("line_width", nozzle_diameter);
+            // Bambu Studio 2.9 mixed diameters: the wall width follows the nozzle printing the outer wall.
+            const double nozzle_diameter = object.print()->config().multi_nozzle_diameter_mode.value ?
+                nozzle_diameter_for_filament(object.print()->config(), extruder_id, true) : object.print()->config().nozzle_diameter.get_at(0);
+            const coordf_t line_width = Flow::extrusion_width_for_nozzle(object.config().line_width,
+                float(primary_nozzle_diameter(object.print()->config())), float(nozzle_diameter), object.print()->config().multi_nozzle_diameter_mode.value);
 
             if (offset_ex(expoly, -0.2 * scale_(line_width)).empty())
                 continue;

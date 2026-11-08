@@ -984,7 +984,10 @@ void tree_supports_generate_paths(
         }
         if (eec) {
             if (!eec->empty()) {
-                std::reverse(eec->entities.begin(), eec->entities.end());
+                // Loops were appended external first. Print the internal loop first, except in multi nozzle
+                // diameter mode, which keeps the external loop first (Bambu Studio 2.9).
+                if (! support_params.multi_nozzle_diameter_mode)
+                    std::reverse(eec->entities.begin(), eec->entities.end());
                 dst.emplace_back(eec.release());
             }
         }

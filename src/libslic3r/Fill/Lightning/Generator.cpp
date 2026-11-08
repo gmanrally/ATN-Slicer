@@ -94,21 +94,24 @@ Generator::Generator(const PrintObject &print_object, const std::function<void()
     const PrintRegionConfig   &region_config        = print_object.shared_regions()->all_regions.front()->config();
     const std::vector<double> &nozzle_diameters     = print_config.nozzle_diameter.values;
     double                     max_nozzle_diameter  = *std::max_element(nozzle_diameters.begin(), nozzle_diameters.end());
+    // Bambu Studio 2.9 mixed diameters: the infill nozzle is the one printing this region's sparse infill.
+    if (print_config.multi_nozzle_diameter_mode.value)
+        max_nozzle_diameter = nozzle_diameter_for_filament(print_config, region_config.sparse_infill_filament_id.value, true);
     const int                  n_multiline          = region_config.fill_multiline.value;
 //    const int                  infill_extruder      = region_config.infill_extruder.value;
     const double               default_infill_extrusion_width = Flow::auto_extrusion_width(FlowRole::frInfill, float(max_nozzle_diameter));
     // Note: There's not going to be a layer below the first one, so the 'initial layer height' doesn't have to be taken into account.
     const double               layer_thickness      = scaled<double>(object_config.layer_height.value);
 
-    m_infill_extrusion_width = scaled<float>(region_config.sparse_infill_line_width.get_abs_value(max_nozzle_diameter));
+    m_infill_extrusion_width = scaled<float>(Flow::extrusion_width_for_nozzle(region_config.sparse_infill_line_width, float(primary_nozzle_diameter(print_config)), float(max_nozzle_diameter), print_config.multi_nozzle_diameter_mode.value));
     // Orca: fix lightning infill divide by zero when infill line width is set to 0.
     // firstly attempt to set it to the default line width. If that is not provided either, set it to a sane default
     // based on the nozzle diameter.
     if (m_infill_extrusion_width < EPSILON)
         m_infill_extrusion_width = scaled<float>(
-            object_config.line_width.get_abs_value(max_nozzle_diameter) < EPSILON ?
+            Flow::extrusion_width_for_nozzle(object_config.line_width, float(primary_nozzle_diameter(print_config)), float(max_nozzle_diameter), print_config.multi_nozzle_diameter_mode.value) < EPSILON ?
             default_infill_extrusion_width :
-            object_config.line_width.get_abs_value(max_nozzle_diameter)
+            Flow::extrusion_width_for_nozzle(object_config.line_width, float(primary_nozzle_diameter(print_config)), float(max_nozzle_diameter), print_config.multi_nozzle_diameter_mode.value)
         );
     
     m_supporting_radius = coord_t(m_infill_extrusion_width) * 100 * n_multiline / region_config.sparse_infill_density;
@@ -131,20 +134,23 @@ Generator::Generator(PrintObject* m_object, std::vector<Polygons>& contours, std
     const PrintRegionConfig   &region_config        = m_object->shared_regions()->all_regions.front()->config();
     const std::vector<double> &nozzle_diameters     = print_config.nozzle_diameter.values;
     double                     max_nozzle_diameter  = *std::max_element(nozzle_diameters.begin(), nozzle_diameters.end());
+    // Bambu Studio 2.9 mixed diameters: the infill nozzle is the one printing this region's sparse infill.
+    if (print_config.multi_nozzle_diameter_mode.value)
+        max_nozzle_diameter = nozzle_diameter_for_filament(print_config, region_config.sparse_infill_filament_id.value, true);
 //    const int                  infill_extruder      = region_config.infill_extruder.value;
     const double               default_infill_extrusion_width = Flow::auto_extrusion_width(FlowRole::frInfill, float(max_nozzle_diameter));
     // Note: There's not going to be a layer below the first one, so the 'initial layer height' doesn't have to be taken into account.
     const double               layer_thickness      = scaled<double>(object_config.layer_height.value);
 
-    m_infill_extrusion_width = scaled<float>(region_config.sparse_infill_line_width.get_abs_value(max_nozzle_diameter));
+    m_infill_extrusion_width = scaled<float>(Flow::extrusion_width_for_nozzle(region_config.sparse_infill_line_width, float(primary_nozzle_diameter(print_config)), float(max_nozzle_diameter), print_config.multi_nozzle_diameter_mode.value));
     // Orca: fix lightning infill divide by zero when infill line width is set to 0.
     // firstly attempt to set it to the default line width. If that is not provided either, set it to a sane default
     // based on the nozzle diameter.
     if (m_infill_extrusion_width < EPSILON)
         m_infill_extrusion_width = scaled<float>(
-            object_config.line_width.get_abs_value(max_nozzle_diameter) < EPSILON ?
+            Flow::extrusion_width_for_nozzle(object_config.line_width, float(primary_nozzle_diameter(print_config)), float(max_nozzle_diameter), print_config.multi_nozzle_diameter_mode.value) < EPSILON ?
             default_infill_extrusion_width :
-            object_config.line_width.get_abs_value(max_nozzle_diameter)
+            Flow::extrusion_width_for_nozzle(object_config.line_width, float(primary_nozzle_diameter(print_config)), float(max_nozzle_diameter), print_config.multi_nozzle_diameter_mode.value)
         );
     //m_supporting_radius: against to the density of lightning, failures may happen if set to high density
     //higher density lightning makes support harder, more time-consuming on computing and printing, but more reliable on supporting overhangs

@@ -540,7 +540,12 @@ void LayerRegion::process_external_surfaces(const Layer *lower_layer, const Poly
     // Width of the perimeters.
     float shell_width = 0;
     float expansion_min = 0;
-    if (int num_perimeters = this->region().config().wall_loops; num_perimeters > 0) {
+    int num_perimeters = this->region().config().wall_loops;
+    // Bambu Studio 2.9 mixed diameters: the wall count follows the nozzle printing the walls.
+    if (const PrintConfig &print_config = this->layer()->object()->print()->config(); print_config.multi_nozzle_diameter_mode.value)
+        num_perimeters = multi_nozzle_wall_loops(
+            nozzle_diameter_for_filament(print_config, this->region().config().inner_wall_filament_id.value, true), num_perimeters);
+    if (num_perimeters > 0) {
         Flow external_perimeter_flow = this->flow(frExternalPerimeter);
         Flow perimeter_flow          = this->flow(frPerimeter);
         shell_width  = 0.5f * external_perimeter_flow.scaled_width() + external_perimeter_flow.scaled_spacing();

@@ -831,15 +831,15 @@ void PerimeterGenerator::split_top_surfaces(const ExPolygons &orig_polygons, ExP
     // split the polygons with top/not_top
     // get the offset from solid surface anchor
     coord_t offset_top_surface =
-        scale_(0.9 * (config->wall_loops.value == 0
+        scale_(0.9 * (effective_wall_loops() == 0
                           ? 0.
                           : unscaled(double(ext_perimeter_width +
-                                            perimeter_spacing * int(int(config->wall_loops.value) - int(1))))));
+                                            perimeter_spacing * int(int(effective_wall_loops()) - int(1))))));
     // if possible, try to not push the extra perimeters inside the sparse infill
     if (offset_top_surface >
-        0.9 * (config->wall_loops.value <= 1 ? 0. : (perimeter_spacing * (config->wall_loops.value - 1))))
+        0.9 * (effective_wall_loops() <= 1 ? 0. : (perimeter_spacing * (effective_wall_loops() - 1))))
         offset_top_surface -=
-            coord_t(0.9 * (config->wall_loops.value <= 1 ? 0. : (perimeter_spacing * (config->wall_loops.value - 1))));
+            coord_t(0.9 * (effective_wall_loops() <= 1 ? 0. : (perimeter_spacing * (effective_wall_loops() - 1))));
     else
         offset_top_surface = 0;
     // don't takes into account too thin areas
@@ -895,8 +895,10 @@ void PerimeterGenerator::split_top_surfaces(const ExPolygons &orig_polygons, ExP
     // increase by half peri the inner space to fill the frontier between last and stored.
     top_fills = union_ex(top_fills, top_polygons);
     //set the clip to the external wall but go back inside by infill_extrusion_width/2 to be sure the extrusion won't go outside even with a 100% overlap.
-    double infill_spacing_unscaled = this->config->sparse_infill_line_width.get_abs_value(nozzle_diameter);
-    if (infill_spacing_unscaled == 0) infill_spacing_unscaled = Flow::auto_extrusion_width(frInfill, nozzle_diameter);
+    const double infill_nozzle = this->infill_nozzle_diameter(nozzle_diameter);
+    double infill_spacing_unscaled = Flow::extrusion_width_for_nozzle(this->config->sparse_infill_line_width, float(primary_nozzle_diameter(*this->print_config)),
+                                                                      float(infill_nozzle), this->print_config->multi_nozzle_diameter_mode.value);
+    if (infill_spacing_unscaled == 0) infill_spacing_unscaled = Flow::auto_extrusion_width(frInfill, float(infill_nozzle));
     fill_clip = offset_ex(orig_polygons, double(ext_perimeter_spacing / 2.) - scale_(infill_spacing_unscaled / 2.));
     // ExPolygons oldLast = last;
 
@@ -1333,10 +1335,10 @@ std::tuple<std::vector<ExtrusionPaths>, Polygons> generate_extra_perimeters_over
 void PerimeterGenerator::apply_extra_perimeters(ExPolygons &infill_area)
 {
     if (!m_spiral_vase && this->lower_slices != nullptr && this->config->detect_overhang_wall && this->config->extra_perimeters_on_overhangs &&
-        this->config->wall_loops > 0 && this->layer_id > this->object_config->raft_layers) {
+        this->effective_wall_loops() > 0 && this->layer_id > this->object_config->raft_layers) {
         // Generate extra perimeters on overhang areas, and cut them to these parts only, to save print time and material
         auto [extra_perimeters, filled_area] = generate_extra_perimeters_over_overhangs(infill_area, this->lower_slices_polygons(),
-                                                                                        this->config->wall_loops, this->overhang_flow,
+                                                                                        this->effective_wall_loops(), this->overhang_flow,
                                                                                         this->m_scaled_resolution, *this->object_config,
                                                                                         *this->print_config);
         if (!extra_perimeters.empty()) {
@@ -1542,7 +1544,7 @@ void PerimeterGenerator::process_classic()
     for (size_t order_idx = 0; order_idx < surface_order.size(); order_idx++) {
         const Surface &surface = all_surfaces[surface_order[order_idx]];
         // detect how many perimeters must be generated for this island
-        int loop_number = this->config->wall_loops + surface.extra_perimeters - 1;  // 0-indexed loops
+        int loop_number = this->effective_wall_loops() + surface.extra_perimeters - 1;  // 0-indexed loops
         int sparse_infill_density = this->config->sparse_infill_density.value;
         if (this->config->alternate_extra_wall && this->layer_id % 2 == 1 && !m_spiral_vase && sparse_infill_density > 0) // add alternating extra wall
             loop_number++;
@@ -2700,7 +2702,7 @@ void PerimeterGenerator::process_arachne()
         ArachneSurfaceResult &result  = results[surface_idx];
             coord_t bead_width_0 = ext_perimeter_spacing;
             // detect how many perimeters must be generated for this island
-            int loop_number = this->config->wall_loops + surface.extra_perimeters - 1; // 0-indexed loops
+            int loop_number = this->effective_wall_loops() + surface.extra_perimeters - 1; // 0-indexed loops
             int sparse_infill_density = this->config->sparse_infill_density.value;
             if (this->config->alternate_extra_wall && this->layer_id % 2 == 1 && !m_spiral_vase && sparse_infill_density > 0) // add alternating extra wall
                 loop_number++;
@@ -3190,13 +3192,35 @@ bool PerimeterGeneratorLoop::is_internal_contour() const
     return true;
 }
 
+int PerimeterGenerator::effective_wall_loops() const
+{
+    const int preset_value = this->config->wall_loops.getInt();
+    if (!this->print_config->multi_nozzle_diameter_mode.value)
+        return preset_value;
+    return multi_nozzle_wall_loops(nozzle_diameter_for_filament(*this->print_config, this->config->inner_wall_filament_id.value, true), preset_value);
+}
+
+double PerimeterGenerator::infill_nozzle_diameter(double fallback) const
+{
+    if (!this->print_config->multi_nozzle_diameter_mode.value)
+        return fallback;
+    const double nozzle = nozzle_diameter_for_filament(*this->print_config, this->config->sparse_infill_filament_id.value, true);
+    return nozzle > EPSILON ? nozzle : fallback;
+}
+
 // ORCA: Arachne drops features below min_feature_size, classic builds nothing thinner than a third of the
 // nozzle. Both describe the layer below, a union of regions sharing neither nozzle nor generator, so every
 // ambiguity resolves low: it may keep a sliver that was never printed, but it never drops one that was.
 ExPolygons PerimeterGenerator::printable_slices(const ExPolygons &slices) const
 {
-    const double min_nozzle_diameter = *std::min_element(print_config->nozzle_diameter.values.begin(),
-                                                        print_config->nozzle_diameter.values.end());
+    double min_nozzle_diameter = *std::min_element(print_config->nozzle_diameter.values.begin(),
+                                                   print_config->nozzle_diameter.values.end());
+    // Bambu Studio 2.9 mixed diameters: nozzle_diameter only carries the extruders, so the percentages below are
+    // resolved against the nozzle that prints these walls. Otherwise a coarse nozzle walls hairline fringes at a
+    // fraction of its own minimum bead width.
+    if (print_config->multi_nozzle_diameter_mode.value)
+        if (const double wall_nozzle = nozzle_diameter_for_filament(*print_config, config->inner_wall_filament_id.value, true); wall_nozzle > EPSILON)
+            min_nozzle_diameter = wall_nozzle;
     double min_width = min_nozzle_diameter / 3.;
     if (object_config->wall_generator.value == PerimeterGeneratorType::Arachne) {
         const double min_feature_size = Arachne::make_paths_params(layer_id, *object_config, min_nozzle_diameter).min_feature_size;

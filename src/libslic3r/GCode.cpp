@@ -767,7 +767,19 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
             float default_line_width = print.default_object_config().get_abs_value("line_width", filament_diameter);
             outer_wall_line_width = default_line_width == 0.0 ? filament_diameter : default_line_width;
         }
-        Flow outer_wall_flow = Flow(outer_wall_line_width, config.layer_height, config.nozzle_diameter.get_at(extruder_id));
+        double nozzle_diameter = config.nozzle_diameter.get_at(extruder_id);
+        // Bambu Studio 2.9 mixed diameters: the outer wall is laid by the nozzle the filament selected, with the width
+        // authored for the preset's nozzle converted to that nozzle.
+        if (print.config().multi_nozzle_diameter_mode.value) {
+            nozzle_diameter = nozzle_diameter_for_filament(print.config(), filament_id + 1, true);
+            const float preset_nozzle_diameter = float(primary_nozzle_diameter(print.config()));
+            outer_wall_line_width = float(Flow::extrusion_width_for_nozzle(print.default_region_config().outer_wall_line_width, preset_nozzle_diameter, float(nozzle_diameter), true));
+            if (outer_wall_line_width == 0.0) {
+                float default_line_width = float(Flow::extrusion_width_for_nozzle(print.default_object_config().line_width, preset_nozzle_diameter, float(nozzle_diameter), true));
+                outer_wall_line_width = default_line_width == 0.0 ? float(filament_diameter) : default_line_width;
+            }
+        }
+        Flow outer_wall_flow = Flow(outer_wall_line_width, config.layer_height, float(nozzle_diameter));
         float outer_wall_speed = print.default_region_config().outer_wall_speed.get_at(extruder_id);
         outer_wall_volumetric_speed = outer_wall_speed * outer_wall_flow.mm3_per_mm();
         if (outer_wall_volumetric_speed > filament_max_volumetric_speed)

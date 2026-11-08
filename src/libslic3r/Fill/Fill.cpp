@@ -1116,11 +1116,11 @@ std::vector<SurfaceFill> group_fills(const Layer &layer, LockRegionParam &lock_p
 				if (params.pattern == ipLockedZag){
 					const PrintObject *object = layerm.layer()->object();
 					auto nozzle_diameter = float(nozzle_diameter_for_filament(object->print()->config(), layerm.region().extruder(extrusion_role), object->print()->is_BBL_printer()));
-					Flow skin_flow = params.bridge ? params.flow : Flow::new_from_config_width(extrusion_role, region_config.skin_infill_line_width, nozzle_diameter, float((surface.thickness == -1) ? layer.height : surface.thickness));
+					Flow skin_flow = params.bridge ? params.flow : Flow::new_from_config_width(extrusion_role, region_config.skin_infill_line_width, float(primary_nozzle_diameter(object->print()->config())), nozzle_diameter, float((surface.thickness == -1) ? layer.height : surface.thickness), object->print()->config().multi_nozzle_diameter_mode.value);
 					//add skin flow
 					append_flow_param(lock_param.skin_flow_params, skin_flow, surface.expolygon);
 
-					Flow skeleton_flow = params.bridge ? params.flow : Flow::new_from_config_width(extrusion_role, region_config.skeleton_infill_line_width, nozzle_diameter, float((surface.thickness == -1) ? layer.height : surface.thickness)) ;
+					Flow skeleton_flow = params.bridge ? params.flow : Flow::new_from_config_width(extrusion_role, region_config.skeleton_infill_line_width, float(primary_nozzle_diameter(object->print()->config())), nozzle_diameter, float((surface.thickness == -1) ? layer.height : surface.thickness), object->print()->config().multi_nozzle_diameter_mode.value);
 					// add skeleton flow
 					append_flow_param(lock_param.skeleton_flow_params, skeleton_flow, surface.expolygon);
 
@@ -1799,6 +1799,10 @@ void Layer::make_ironing()
                 ironing_params.inset = (!config.filament_ironing_inset.is_nil(extruder_idx)
 					? config.filament_ironing_inset.get_at(extruder_idx)
 					: config.ironing_inset);
+                // Bambu Studio 2.9 mixed diameters: the ironing inset follows the nozzle laying the top surface.
+                if (const PrintConfig &print_config = layerm->layer()->object()->print()->config(); print_config.multi_nozzle_diameter_mode.value)
+                    ironing_params.inset = multi_nozzle_ironing_inset(
+                        nozzle_diameter_for_filament(print_config, config.internal_solid_filament_id.value, true), ironing_params.inset);
 				ironing_params.height = default_layer_height * 0.01 * (!config.filament_ironing_flow.is_nil(extruder_idx)
 					? config.filament_ironing_flow.get_at(extruder_idx)
 					: config.ironing_flow);

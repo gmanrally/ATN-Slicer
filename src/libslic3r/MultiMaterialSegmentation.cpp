@@ -1243,6 +1243,19 @@ static int color_penetration_layers(const ConfigOptionInt &penetration_layers, c
     return penetration_layers.value > 0 ? penetration_layers.value : shell_layers.value;
 }
 
+// Bambu Studio 2.9 mixed diameters: the colour penetration depth follows the nozzle printing the walls.
+static int color_penetration_layers(const PrintObject &print_object, const PrintRegionConfig &config, bool top)
+{
+    const ConfigOptionInt &penetration = top ? config.top_color_penetration_layers : config.bottom_color_penetration_layers;
+    const ConfigOptionInt &shell       = top ? config.top_shell_layers : config.bottom_shell_layers;
+    const int layers = color_penetration_layers(penetration, shell);
+    const PrintConfig &print_config = print_object.print()->config();
+    if (! print_config.multi_nozzle_diameter_mode.value)
+        return layers;
+    const double nozzle = nozzle_diameter_for_filament(print_config, config.outer_wall_filament_id.value, true);
+    return top ? multi_nozzle_top_color_penetration_layers(nozzle, layers) : multi_nozzle_bottom_color_penetration_layers(nozzle, layers);
+}
+
 // Returns segmentation of top and bottom layers based on painting in segmentation gizmos.
 static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_layers(const PrintObject                                               &print_object,
                                                                                       const std::vector<ExPolygons>                                   &input_expolygons,
@@ -1258,8 +1271,8 @@ static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_l
     int max_bottom_layers = 0;
     for (size_t i = 0; i < print_object.num_printing_regions(); ++ i) {
         const PrintRegionConfig &config = print_object.printing_region(i).config();
-        max_top_layers    = std::max(max_top_layers, color_penetration_layers(config.top_color_penetration_layers, config.top_shell_layers));
-        max_bottom_layers = std::max(max_bottom_layers, color_penetration_layers(config.bottom_color_penetration_layers, config.bottom_shell_layers));
+        max_top_layers    = std::max(max_top_layers, color_penetration_layers(print_object, config, true));
+        max_bottom_layers = std::max(max_bottom_layers, color_penetration_layers(print_object, config, false));
     }
 
     // Project upwards pointing painted triangles over top surfaces,
@@ -1425,8 +1438,8 @@ static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_l
                 //BBS: the extrusion line width is outer wall rather than inner wall
                 double outer_wall_line_width = resolve_outer_wall_line_width(config, print_object.config(), print_object.print()->config());
                 out.extrusion_width     = std::max<float>(out.extrusion_width, outer_wall_line_width);
-                out.top_penetration_layers    = std::max(out.top_penetration_layers, color_penetration_layers(config.top_color_penetration_layers, config.top_shell_layers));
-                out.bottom_penetration_layers = std::max(out.bottom_penetration_layers, color_penetration_layers(config.bottom_color_penetration_layers, config.bottom_shell_layers));
+                out.top_penetration_layers    = std::max(out.top_penetration_layers, color_penetration_layers(print_object, config, true));
+                out.bottom_penetration_layers = std::max(out.bottom_penetration_layers, color_penetration_layers(print_object, config, false));
                 out.small_region_threshold = config.gap_infill_speed.get_at(print_object.print()->get_extruder_id(config.outer_wall_filament_id - 1)) > 0 ?
                                              // Gap fill enabled. Enable a single line of 1/2 extrusion width.
                                              0.5f * outer_wall_line_width :

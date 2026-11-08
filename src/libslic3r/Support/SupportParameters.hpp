@@ -193,9 +193,12 @@ struct SupportParameters {
             assert(slicing_params.raft_layers() == 0);
         }
 
-	    const auto     nozzle_diameter = print_config.nozzle_diameter.get_at(object_config.support_interface_filament - 1);
-        const coordf_t extrusion_width = object_config.line_width.get_abs_value(nozzle_diameter);
-        support_extrusion_width        = object_config.support_line_width.get_abs_value(nozzle_diameter);
+        // Bambu Studio 2.9 mixed diameters: the support width follows the nozzle printing the interface.
+        this->multi_nozzle_diameter_mode = print_config.multi_nozzle_diameter_mode.value;
+        this->preset_nozzle_diameter     = float(primary_nozzle_diameter(print_config));
+	    const auto     nozzle_diameter = nozzle_diameter_for_filament(print_config, object_config.support_interface_filament.value, object.print()->is_BBL_printer());
+        const coordf_t extrusion_width = Flow::extrusion_width_for_nozzle(object_config.line_width, this->preset_nozzle_diameter, float(nozzle_diameter), this->multi_nozzle_diameter_mode);
+        support_extrusion_width        = Flow::extrusion_width_for_nozzle(object_config.support_line_width, this->preset_nozzle_diameter, float(nozzle_diameter), this->multi_nozzle_diameter_mode);
         support_extrusion_width        = support_extrusion_width > 0 ? support_extrusion_width : extrusion_width;
 
         independent_layer_height = independent_support_layers(print_config, slicing_params);
@@ -331,6 +334,9 @@ struct SupportParameters {
 		
     bool independent_layer_height = false;
     bool use_extruder_layer_heights = false;
+    // Bambu Studio 2.9 mixed diameters: preset nozzle the widths were authored for, and the project gate.
+    float preset_nozzle_diameter { 0.f };
+    bool  multi_nozzle_diameter_mode { false };
     const double thresh_big_overhang = Slic3r::sqr(scale_(10));
 
 	bool          ironing;
