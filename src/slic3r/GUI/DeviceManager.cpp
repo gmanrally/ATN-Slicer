@@ -408,6 +408,10 @@ static wxString _generate_nozzle_id(NozzleVolumeType nozzle_type, const std::str
         nozzle_id += "B";
         break;
     }
+    case NozzleVolumeType::nvtTPU285: {
+        nozzle_id += "T"; // dedicated 2.85 mm TPU hotend (Bambu H3C)
+        break;
+    }
     default:
         nozzle_id += "H";
         break;
@@ -431,6 +435,8 @@ NozzleVolumeType convert_to_nozzle_type(const std::string &str)
         res = NozzleVolumeType::nvtHighFlow;
     else if (str[1] == 'B')
         res = NozzleVolumeType::nvtE3DHighFlow;
+    else if (str[1] == 'T')
+        res = NozzleVolumeType::nvtTPU285;
     return res;
 }
 

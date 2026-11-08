@@ -70,7 +70,7 @@ class ManualNozzleCountDialog : public DPIDialog
 {
 public:
     // supported_types lists the volume types the extruder physically provides; an empty set means "unknown", in which case no filtering is applied.
-    ManualNozzleCountDialog(wxWindow *parent, NozzleVolumeType volume_type, int standard_count, int highflow_count, int e3d_count, int max_nozzle_count, bool force_no_zero,
+    ManualNozzleCountDialog(wxWindow *parent, NozzleVolumeType volume_type, int standard_count, int highflow_count, int e3d_count, int tpu285_count, int max_nozzle_count, bool force_no_zero,
                             const std::set<NozzleVolumeType> &supported_types);
     ~ManualNozzleCountDialog() override = default;
     void on_dpi_changed(const wxRect &suggested_rect) override {}
@@ -80,6 +80,7 @@ private:
     ComboBox        *m_standard_choice{nullptr};
     ComboBox        *m_highflow_choice{nullptr};
     ComboBox        *m_e3d_choice{nullptr};
+    ComboBox        *m_tpu285_choice{nullptr};
     Button          *m_confirm_btn{nullptr};
     wxStaticText    *m_error_label{nullptr};
 };

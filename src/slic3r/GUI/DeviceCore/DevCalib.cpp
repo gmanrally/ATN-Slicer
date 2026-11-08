@@ -48,6 +48,8 @@ static NozzleVolumeType convert_to_nozzle_type(const std::string &str)
         return NozzleVolumeType::nvtTPUHighFlow;
     else if (str[1] == 'B')
         return NozzleVolumeType::nvtE3DHighFlow;
+    else if (str[1] == 'T')
+        return NozzleVolumeType::nvtTPU285; // dedicated 2.85 mm TPU hotend (Bambu H3C)
     else
         return NozzleVolumeType::nvtStandard;
 }
