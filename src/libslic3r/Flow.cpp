@@ -131,6 +131,35 @@ double Flow::extrusion_width(const std::string& opt_key, const ConfigOptionResol
     return extrusion_width(opt_key, config.option<ConfigOptionFloatOrPercent>(opt_key), config, first_printing_extruder);
 }
 
+double Flow::extrusion_width_for_nozzle(const ConfigOptionFloatOrPercent &width, float preset_nozzle_diameter, float nozzle_diameter,
+                                        bool multi_nozzle_diameter_mode)
+{
+    if (width.percent)
+        return width.get_abs_value(nozzle_diameter);
+    if (!multi_nozzle_diameter_mode || width.value == 0. || preset_nozzle_diameter <= 0.f || nozzle_diameter <= 0.f)
+        return width.value;
+    // The GUI keeps showing the absolute width authored by the process preset. Convert it to an intermediate percentage
+    // and reuse the existing percent-to-absolute conversion for the actual nozzle.
+    const ConfigOptionFloatOrPercent relative_width(100. * width.value / preset_nozzle_diameter, true);
+    return relative_width.get_abs_value(nozzle_diameter);
+}
+
+Flow Flow::new_from_config_width(FlowRole role, const ConfigOptionFloatOrPercent &width, float preset_nozzle_diameter, float nozzle_diameter,
+                                 float height, bool multi_nozzle_diameter_mode)
+{
+    if (height <= 0)
+        throw Slic3r::InvalidArgument("Invalid flow height supplied to new_from_config_width().");
+
+    float w;
+    if (!width.percent && width.value <= 0.) {
+        // If user left option to 0, calculate a sane default width.
+        w = auto_extrusion_width(role, nozzle_diameter);
+    } else {
+        w = float(extrusion_width_for_nozzle(width, preset_nozzle_diameter, nozzle_diameter, multi_nozzle_diameter_mode));
+    }
+    return Flow(w, height, rounded_rectangle_extrusion_spacing(w, height), nozzle_diameter, false);
+}
+
 // This constructor builds a Flow object from an extrusion width config setting
 // and other context properties.
 Flow Flow::new_from_config_width(FlowRole role, const ConfigOptionFloatOrPercent &width, float nozzle_diameter, float height)
@@ -238,13 +267,16 @@ double Flow::mm3_per_mm() const
 
 Flow support_material_flow(const PrintObject *object, float layer_height)
 {
+    const PrintConfig &print_config = object->print()->config();
     return Flow::new_from_config_width(
         frSupportMaterial,
         // The width parameter accepted by new_from_config_width is of type ConfigOptionFloatOrPercent, the Flow class takes care of the percent to value substitution.
         (object->config().support_line_width.value > 0) ? object->config().support_line_width : object->config().line_width,
+        float(primary_nozzle_diameter(print_config)),
         // if object->config().support_filament == 0 (which means to not trigger tool change, but use the current extruder instead), get_at will return the 0th component.
-        float(nozzle_diameter_for_filament(object->print()->config(), object->config().support_filament, object->print()->is_BBL_printer())),
-        (layer_height > 0.f) ? layer_height : float(object->config().layer_height.value));
+        float(nozzle_diameter_for_filament(print_config, object->config().support_filament, object->print()->is_BBL_printer())),
+        (layer_height > 0.f) ? layer_height : float(object->config().layer_height.value),
+        print_config.multi_nozzle_diameter_mode.value);
 }
 //BBS
 Flow support_transition_flow(const PrintObject* object)
@@ -262,19 +294,24 @@ Flow support_material_1st_layer_flow(const PrintObject *object, float layer_heig
         frSupportMaterial,
         // The width parameter accepted by new_from_config_width is of type ConfigOptionFloatOrPercent, the Flow class takes care of the percent to value substitution.
         (width.value > 0) ? width : object->config().line_width,
+        float(primary_nozzle_diameter(print_config)),
         float(nozzle_diameter_for_filament(print_config, object->config().support_filament, object->print()->is_BBL_printer())),
-        (layer_height > 0.f) ? layer_height : float(print_config.initial_layer_print_height.value));
+        (layer_height > 0.f) ? layer_height : float(print_config.initial_layer_print_height.value),
+        print_config.multi_nozzle_diameter_mode.value);
 }
 
 Flow support_material_interface_flow(const PrintObject *object, float layer_height)
 {
+    const PrintConfig &print_config = object->print()->config();
     return Flow::new_from_config_width(
         frSupportMaterialInterface,
         // The width parameter accepted by new_from_config_width is of type ConfigOptionFloatOrPercent, the Flow class takes care of the percent to value substitution.
         (object->config().support_line_width > 0) ? object->config().support_line_width : object->config().line_width,
+        float(primary_nozzle_diameter(print_config)),
         // if object->config().support_interface_filament == 0 (which means to not trigger tool change, but use the current extruder instead), get_at will return the 0th component.
-        float(nozzle_diameter_for_filament(object->print()->config(), object->config().support_interface_filament, object->print()->is_BBL_printer())),
-        (layer_height > 0.f) ? layer_height : float(object->config().layer_height.value));
+        float(nozzle_diameter_for_filament(print_config, object->config().support_interface_filament, object->print()->is_BBL_printer())),
+        (layer_height > 0.f) ? layer_height : float(object->config().layer_height.value),
+        print_config.multi_nozzle_diameter_mode.value);
 }
 
 }

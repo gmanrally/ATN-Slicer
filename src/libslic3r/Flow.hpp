@@ -109,6 +109,14 @@ public:
 
     static Flow new_from_config_width(FlowRole role, const ConfigOptionFloatOrPercent &width, float nozzle_diameter, float height);
 
+    // Bambu Studio 2.9 mixed nozzle diameters: convert the absolute width authored for the preset's nozzle into the width
+    // for the nozzle that prints the path. Percent widths already follow the nozzle and are left alone. With the mode
+    // off this is width.get_abs_value(nozzle_diameter), so single-diameter slicing is unchanged.
+    static double extrusion_width_for_nozzle(const ConfigOptionFloatOrPercent &width, float preset_nozzle_diameter, float nozzle_diameter,
+                                             bool multi_nozzle_diameter_mode);
+    static Flow new_from_config_width(FlowRole role, const ConfigOptionFloatOrPercent &width, float preset_nozzle_diameter, float nozzle_diameter,
+                                      float height, bool multi_nozzle_diameter_mode);
+
     // Spacing of extrusions with rounded extrusion model.
     static float rounded_rectangle_extrusion_spacing(float width, float height);
     // Width of extrusions with rounded extrusion model.

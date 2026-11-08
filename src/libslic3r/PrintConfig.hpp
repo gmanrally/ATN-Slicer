@@ -1784,6 +1784,15 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionInts,                filament_nozzle_map))
     // Bambu H3C: one extruder position whose hotends are treated as extruders by the firmware (M104 I<tool>, per-hotend retract state).
     ((ConfigOptionBool,                handle_hotend_as_extruder))
+    // Bambu Studio 2.9 mixed nozzle diameters. multi_nozzle_diameter_mode is the project-level gate: while it is off
+    // every mixed-diameter query answers as if the machine offered one diameter and slicing is bit-identical to before.
+    // filament_diameter_map holds the nozzle diameter each filament (1-based slot order) was selected to print with, as a
+    // string such as "0.4"; an empty entry means "not selected" and falls back to the extruder's nozzle_diameter.
+    ((ConfigOptionBool,                multi_nozzle_diameter_mode))
+    ((ConfigOptionStrings,             filament_diameter_map))
+    // Bambu nozzle-rack hotend change: cool the parked hotend with an idle travel instead of switching its heater off.
+    ((ConfigOptionBools,               filament_idle_travel_cooling_enabled))
+    ((ConfigOptionBools,               filament_pre_heating_enabled))
     ((ConfigOptionInts,                filament_map_2)) //used for multi nozzle, map filament to the index identified by extruder+nozzle_volume_type
     //((ConfigOptionInts,                filament_extruder_id))
     ((ConfigOptionStrings,             filament_extruder_variant))
@@ -1889,6 +1898,20 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionEnumsGeneric,        nozzle_volume_type))
     ((ConfigOptionStrings,             extruder_ams_count))
     ((ConfigOptionStrings,             extruder_nozzle_stats))
+    // Per-slot nozzle description in the Bambu Studio layout: extruder_nozzle_count = nozzles per extruder;
+    // extruder_nozzle_volume_type / extruder_nozzle_diameter = flat per-slot lists in physical order;
+    // extruder_nozzle_slot = physical slot index of each installed nozzle, so group_id stays the physical slot even
+    // when some slots are empty. The grouping prefers these over extruder_nozzle_stats when they are consistent.
+    ((ConfigOptionInts,                extruder_nozzle_count))
+    ((ConfigOptionEnumsGeneric,        extruder_nozzle_volume_type))
+    ((ConfigOptionFloats,              extruder_nozzle_diameter))
+    ((ConfigOptionInts,                extruder_nozzle_slot))
+    // Physical slot reserved for the AMS-fed nozzle of a nozzle-rack printer (-1: the model has no AMS slot).
+    ((ConfigOptionInts,                ams_nozzle_idx))
+    // Cooling rate (C/s) of a hotend parked on the rack, per extruder variant.
+    ((ConfigOptionFloatsNullable,      hotend_cooling_rate_on_rack))
+    // Time to switch extruder, statistics only.
+    ((ConfigOptionFloat,               machine_switch_extruder_time))
     ((ConfigOptionInts,                printer_extruder_id))
     ((ConfigOptionInt,                 master_extruder_id))
     ((ConfigOptionStrings,             printer_extruder_variant))
@@ -2098,6 +2121,8 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionStrings,            slicing_pipeline_plugin))
     ((ConfigOptionString,             print_plugin_config_overrides))
     ((ConfigOptionString,             printer_model))
+    // Nozzle diameter the machine/process presets were selected for ("0.4"). primary_nozzle_diameter() reads it.
+    ((ConfigOptionString,             printer_variant))
     ((ConfigOptionFloat,              resolution))
     ((ConfigOptionFloats,             retraction_minimum_travel))
     ((ConfigOptionBools,              retract_when_changing_layer))
@@ -2794,6 +2819,79 @@ static bool has_zero_flush_volume_for_used_filaments(const std::vector<T> &fv_ma
 size_t get_extruder_index(const GCodeConfig& config, unsigned int filament_id);
 
 double nozzle_diameter_for_filament(const PrintConfig& config, int filament_id, bool is_bbl_printer);
+
+// ---- Bambu Studio 2.9 mixed nozzle diameters (multi_nozzle_diameter_mode) ------------------------------------------
+// Ported from BambuStudio commit 56a57d00a591360cf41bf21383915ee5bf357be5 (AGPL-3.0), src/libslic3r/PrintConfig.*.
+
+// True when the flat per-slot diameter list is the authoritative diameter source. Single-extruder multi-nozzle
+// machines (nozzle rack) keep their non-empty-list behaviour; multi-extruder machines need a list covering every slot.
+bool has_authoritative_per_slot_nozzle_diameters(bool handle_hotend_as_extruder, const std::vector<int> &slot_counts,
+                                                 const std::vector<double> &slot_diameters);
+
+// The project-level gate of the mixed-diameter flow. Every query that could make a path behave as multi-diameter goes
+// through it, so a project with the mode off slices exactly as before. A missing option means off.
+bool multi_nozzle_diameter_mode_enabled(const ConfigOptionResolver &config);
+
+// printer_variant of the system printer that multi-diameter mode slices against, and the one used when leaving it.
+inline constexpr const char *canonical_multi_nozzle_printer_variant() { return "0.4"; }
+inline constexpr const char *default_single_nozzle_printer_variant() { return "0.4"; }
+
+// Whether a nozzle of this (diameter, flow) is a product that exists at all: E3D high flow only comes in 0.4 and 0.6,
+// 0.2 comes as Standard only, and the 2.85 mm TPU hotend is 0.4/0.6/0.8.
+inline bool nozzle_variant_exists(const std::string &diameter, NozzleVolumeType volume_type)
+{
+    if (volume_type == NozzleVolumeType::nvtE3DHighFlow && diameter != "0.4" && diameter != "0.6")
+        return false;
+    if (diameter == "0.2" && volume_type != NozzleVolumeType::nvtStandard)
+        return false;
+    return true;
+}
+
+// Values of printer_nozzle_diameter_mode: the mode a user/project printer preset was saved in. System presets and
+// presets saved before the option existed carry an empty value.
+inline constexpr const char *printer_nozzle_diameter_mode_single() { return "single"; }
+inline constexpr const char *printer_nozzle_diameter_mode_multi() { return "multi"; }
+std::string printer_nozzle_diameter_mode_tag(const ConfigBase &config);
+
+// Multi-diameter tuning tables. These live in code instead of presets: all nozzle diameters share one machine/process
+// preset while slicing resolves the effective value per filament. Unknown diameters keep the preset value.
+double multi_nozzle_retraction_length(double nozzle_diameter, double preset_value);
+double multi_nozzle_ironing_inset(double nozzle_diameter, double preset_value);
+int    multi_nozzle_wall_loops(double nozzle_diameter, int preset_value);
+int    multi_nozzle_top_shell_layers(double nozzle_diameter, int preset_value);
+double multi_nozzle_top_shell_thickness(double nozzle_diameter, double preset_value);
+int    multi_nozzle_bottom_shell_layers(double nozzle_diameter, int preset_value);
+double multi_nozzle_bottom_shell_thickness(double nozzle_diameter, double preset_value);
+int    multi_nozzle_top_color_penetration_layers(double nozzle_diameter, int preset_value);
+int    multi_nozzle_bottom_color_penetration_layers(double nozzle_diameter, int preset_value);
+double multi_nozzle_support_z_distance(double nozzle_diameter, double preset_value);
+// Options shown as "Auto" while the mode is on; accepts "key" and "key#idx".
+bool is_multi_nozzle_auto_option(const std::string &opt_key);
+// Prime tower defaults per diameter: 0.2 mm nozzle line width 0.4, others 0.8; feedrate factor 1; ramming width 0.
+double multi_nozzle_prime_tower_line_width(double nozzle_diameter, double preset_value);
+double multi_nozzle_prime_tower_ramming_line_width(double nozzle_diameter, double preset_value);
+double multi_nozzle_prime_tower_feedrate_factor(double nozzle_diameter, double preset_value);
+
+// Whether the printer offers more than one nozzle diameter. Machine capability, not what a print uses. Always false
+// while the mode is off.
+bool has_multiple_configured_nozzle_diameters(const ConfigBase &config);
+// Copy the common physical-component nozzle diameter into every valid mixed virtual slot.
+void sync_mixed_filament_nozzle_diameters(DynamicPrintConfig &config);
+// Fill every physical filament slot with a deterministic nozzle diameter when multiple configured diameters are
+// active, then synchronise mixed virtual slots from their components. Existing valid selections are preserved.
+bool complete_filament_nozzle_diameter_selections(DynamicPrintConfig &config, const std::vector<std::string> &supported_diameters);
+// The diameter a 1-based filament was explicitly selected to print with, 0 when none (or the mode is off).
+float selected_nozzle_diameter_for_filament(const PrintConfig &config, unsigned int filament_id);
+// Diameter the user selected to switch the machine/process preset (printer_variant), else the first nozzle_diameter.
+double primary_nozzle_diameter(const ConfigBase &config);
+// Diameter the object layer grid is anchored to: 0.2 in multi-diameter mode, the primary diameter otherwise.
+double layer_grid_nozzle_diameter(const ConfigBase &config);
+// How many object layers the preset's authored layer height is cut into: round(primary / grid anchor), 1 without the mode.
+int layer_grid_subdivision(const ConfigBase &config);
+// Single-extruder multi-nozzle machine (Bambu nozzle rack): hotend-as-extruder, one extruder, several nozzles.
+bool is_single_ext_multi_nozzle(const ConfigBase &config);
+// Effective AMS nozzle slot: ams_nozzle_idx when an AMS is actually present (extruder_ams_count has a non-zero slot), else -1.
+int get_effective_ams_nozzle_idx(const ConfigBase &config);
 
 } // namespace Slic3r
 

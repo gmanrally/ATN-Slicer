@@ -490,6 +490,14 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
             || opt_key == "initial_layer_print_height"
             || opt_key == "extruder_layer_height"
             || opt_key == "nozzle_diameter"
+            // Bambu Studio 2.9 mixed nozzle diameters: the gate, the selections and the installed nozzles decide the layer grid.
+            || opt_key == "multi_nozzle_diameter_mode"
+            || opt_key == "filament_diameter_map"
+            || opt_key == "extruder_nozzle_diameter"
+            || opt_key == "extruder_nozzle_slot"
+            || opt_key == "extruder_nozzle_count"
+            || opt_key == "extruder_nozzle_volume_type"
+            || opt_key == "printer_variant"
             || opt_key == "filament_shrink"
             || opt_key == "filament_shrinkage_compensation_z"
             || opt_key == "resolution"
@@ -3161,8 +3169,10 @@ Flow Print::brim_flow() const
         frPerimeter,
         // Flow::new_from_config_width takes care of the percent to value substitution
 		width,
+        (float)primary_nozzle_diameter(m_config),
         (float)nozzle_diameter_for_filament(m_config, m_print_regions.front()->config().outer_wall_filament_id, this->is_BBL_printer()),
-		(float)this->skirt_first_layer_height());
+		(float)this->skirt_first_layer_height(),
+        m_config.multi_nozzle_diameter_mode.value);
 }
 
 Flow Print::skirt_flow() const
@@ -3182,9 +3192,11 @@ Flow Print::skirt_flow() const
         frPerimeter,
         // Flow::new_from_config_width takes care of the percent to value substitution
         width,
+        (float)primary_nozzle_diameter(m_config),
         // ORCA: resolve the actual nozzle the support filament is printed with (dual-nozzle printers).
         (float)nozzle_diameter_for_filament(m_config, m_objects.empty() ? 0 : m_objects.front()->config().support_filament, this->is_BBL_printer()),
-        (float)this->skirt_first_layer_height());
+        (float)this->skirt_first_layer_height(),
+        m_config.multi_nozzle_diameter_mode.value);
 }
 
 bool Print::has_support_material() const

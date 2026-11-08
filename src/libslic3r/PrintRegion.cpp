@@ -58,7 +58,10 @@ Flow PrintRegion::flow(const PrintObject &object, FlowRole role, double layer_he
     // Get the configured nozzle_diameter for the extruder associated to the flow role requested.
     // Here this->extruder(role) - 1 may underflow to MAX_INT, but then the get_at() will follback to zero'th element, so everything is all right.
     auto nozzle_diameter = float(nozzle_diameter_for_filament(print_config, this->extruder(role), object.print()->is_BBL_printer()));
-    return Flow::new_from_config_width(role, config_width, nozzle_diameter, float(layer_height));
+    // Bambu Studio 2.9 mixed nozzle diameters: absolute widths were authored for the preset's nozzle and follow the
+    // nozzle that prints this role. Inert while multi_nozzle_diameter_mode is off.
+    return Flow::new_from_config_width(role, config_width, float(primary_nozzle_diameter(print_config)), nozzle_diameter, float(layer_height),
+                                       print_config.multi_nozzle_diameter_mode.value);
 }
 
 coordf_t PrintRegion::nozzle_dmr_avg(const PrintConfig &print_config) const

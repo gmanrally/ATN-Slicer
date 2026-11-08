@@ -1539,7 +1539,7 @@ static std::vector<std::string> s_Preset_print_options{
 };
 
 static std::vector<std::string> s_Preset_filament_options {/*"filament_colour", */ "default_filament_colour", "required_nozzle_HRC", "filament_diameter", "pellet_flow_coefficient", "volumetric_speed_coefficients", "filament_type",
-                                                          "filament_soluble", "filament_is_support", "filament_printable", "filament_extruder_compatibility",
+                                                          "filament_soluble", "filament_is_support", "filament_idle_travel_cooling_enabled", "filament_pre_heating_enabled", "filament_printable", "filament_extruder_compatibility",
     "filament_max_volumetric_speed", "filament_adaptive_volumetric_speed",
     "filament_flow_ratio", "filament_density", "filament_adhesiveness_category", "filament_cost", "filament_minimal_purge_on_wipe_tower",
     "filament_tower_interface_pre_extrusion_dist", "filament_tower_interface_pre_extrusion_length", "filament_tower_ironing_area", "filament_tower_interface_purge_volume",
@@ -1655,6 +1655,8 @@ static std::vector<std::string> s_Preset_printer_options {
     "imex_mode_names", "imex_mode_active_tools", "imex_mode_gcodes",
     // Multi-nozzle count + pre-heat model printer options
     "extruder_max_nozzle_count", "handle_hotend_as_extruder", "group_algo_with_time", "enable_pre_heating", "hotend_heating_rate", "hotend_cooling_rate",
+    // Bambu nozzle rack / mixed nozzle diameters (Bambu Studio 2.9)
+    "ams_nozzle_idx", "hotend_cooling_rate_on_rack", "machine_switch_extruder_time", "printer_nozzle_diameter_mode", "extruder_clearance_max_radius",
     "machine_hotend_change_time", "machine_prepare_compensation_time",
     // Fast-purge printer flag + device/firmware-facing per-variant extruder-change
     // deretraction speed (unconsumed by the slicer; carried by H2D/A2L/X2D/P2S machine profiles).

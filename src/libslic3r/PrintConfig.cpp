@@ -11,7 +11,11 @@
 #include "MaterialType.hpp"
 #include "I18N.hpp"
 #include "LocalesUtils.hpp"
+#include "Utils.hpp"
 #include "format.hpp"
+#include <array>
+#include <set>
+#include <sstream>
 
 #include "GCode/Thumbnails.hpp"
 #include <algorithm>
@@ -147,6 +151,11 @@ size_t get_extruder_index(const GCodeConfig& config, unsigned int filament_id)
 
 double nozzle_diameter_for_filament(const PrintConfig& config, int filament_id, bool is_bbl_printer)
 {
+    // Bambu Studio 2.9 mixed nozzle diameters: an explicit per-filament selection names the nozzle that prints this
+    // filament and wins over the extruder lookup below. It is zero until multi_nozzle_diameter_mode is on.
+    if (filament_id >= 1)
+        if (const float selected = selected_nozzle_diameter_for_filament(config, (unsigned int) filament_id); selected > 0.f)
+            return double(selected);
     int extruder = filament_id;
     const bool explicit_layer_heights = std::any_of(config.extruder_layer_height.values.begin(), config.extruder_layer_height.values.end(),
                                                     [](double height) { return height > 0.; });
@@ -156,6 +165,429 @@ double nozzle_diameter_for_filament(const PrintConfig& config, int filament_id, 
         filament_id >= 1 && static_cast<size_t>(filament_id - 1) < config.filament_map.size())
         extruder = config.filament_map.get_at(filament_id - 1);
     return config.nozzle_diameter.get_at(extruder - 1);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Bambu Studio 2.9 mixed nozzle diameters (multi_nozzle_diameter_mode).
+// Ported from BambuStudio commit 56a57d00a591360cf41bf21383915ee5bf357be5 (AGPL-3.0), src/libslic3r/PrintConfig.cpp.
+// nozzle_diameter is a plain ConfigOptionFloats here (nullable in Bambu Studio), so vectors are read through the base.
+// ---------------------------------------------------------------------------------------------------------------------
+
+bool has_authoritative_per_slot_nozzle_diameters(bool handle_hotend_as_extruder, const std::vector<int> &slot_counts,
+                                                 const std::vector<double> &slot_diameters)
+{
+    if (slot_diameters.empty())
+        return false;
+    if (handle_hotend_as_extruder)
+        return true;
+    // Requiring an extruder with several slots would reject a dual-extruder machine that carries one diameter per side,
+    // and its slots would then be filtered against a single representative diameter. A self-consistent per-slot list is
+    // authoritative on its own.
+    size_t expected_slot_count = 0;
+    for (int count : slot_counts)
+        if (count > 0)
+            expected_slot_count += size_t(count);
+    return expected_slot_count > 0 && slot_diameters.size() == expected_slot_count;
+}
+
+bool multi_nozzle_diameter_mode_enabled(const ConfigOptionResolver &config)
+{
+    const auto *opt = config.option<ConfigOptionBool>("multi_nozzle_diameter_mode");
+    return opt != nullptr && opt->value;
+}
+
+std::string printer_nozzle_diameter_mode_tag(const ConfigBase &config)
+{
+    const auto *opt = config.option<ConfigOptionString>("printer_nozzle_diameter_mode");
+    return opt != nullptr ? opt->value : std::string();
+}
+
+namespace {
+template<typename T>
+T multi_nozzle_value(double nozzle_diameter, T preset_value, const std::array<T, 4> &values)
+{
+    constexpr std::array<double, 4> diameters { 0.2, 0.4, 0.6, 0.8 };
+    for (size_t i = 0; i < diameters.size(); ++i)
+        if (std::abs(nozzle_diameter - diameters[i]) < 1e-3)
+            return values[i];
+    return preset_value;
+}
+} // namespace
+
+double multi_nozzle_retraction_length(double nozzle_diameter, double preset_value)
+{
+    return multi_nozzle_value(nozzle_diameter, preset_value, std::array<double, 4> { 0.4, 0.8, 1.4, 3.0 });
+}
+
+double multi_nozzle_ironing_inset(double nozzle_diameter, double preset_value)
+{
+    return multi_nozzle_value(nozzle_diameter, preset_value, std::array<double, 4> { 0.11, 0.21, 0.31, 0.41 });
+}
+
+int multi_nozzle_wall_loops(double nozzle_diameter, int preset_value)
+{
+    return multi_nozzle_value(nozzle_diameter, preset_value, std::array<int, 4> { 4, 2, 2, 2 });
+}
+
+int multi_nozzle_top_shell_layers(double nozzle_diameter, int preset_value)
+{
+    return multi_nozzle_value(nozzle_diameter, preset_value, std::array<int, 4> { 7, 5, 3, 3 });
+}
+
+double multi_nozzle_top_shell_thickness(double nozzle_diameter, double preset_value)
+{
+    return multi_nozzle_value(nozzle_diameter, preset_value, std::array<double, 4> { 0.8, 1.0, 0.8, 0.8 });
+}
+
+int multi_nozzle_bottom_shell_layers(double nozzle_diameter, int preset_value)
+{
+    return multi_nozzle_value(nozzle_diameter, preset_value, std::array<int, 4> { 5, 3, 3, 3 });
+}
+
+double multi_nozzle_bottom_shell_thickness(double nozzle_diameter, double preset_value)
+{
+    return multi_nozzle_value(nozzle_diameter, preset_value, std::array<double, 4> { 0.0, 0.0, 0.0, 0.0 });
+}
+
+int multi_nozzle_top_color_penetration_layers(double nozzle_diameter, int preset_value)
+{
+    return multi_nozzle_value(nozzle_diameter, preset_value, std::array<int, 4> { 7, 5, 3, 3 });
+}
+
+int multi_nozzle_bottom_color_penetration_layers(double nozzle_diameter, int preset_value)
+{
+    return multi_nozzle_value(nozzle_diameter, preset_value, std::array<int, 4> { 5, 3, 3, 3 });
+}
+
+double multi_nozzle_support_z_distance(double nozzle_diameter, double preset_value)
+{
+    return multi_nozzle_value(nozzle_diameter, preset_value, std::array<double, 4> { 0.1, 0.2, 0.2, 0.2 });
+}
+
+bool is_multi_nozzle_auto_option(const std::string &opt_key)
+{
+    static const std::set<std::string> auto_options {
+        "retraction_length",
+        "min_layer_height",
+        "max_layer_height",
+        "ironing_inset",
+        "wall_loops",
+        "top_shell_layers",
+        "bottom_shell_layers",
+        "top_shell_thickness",
+        "bottom_shell_thickness",
+        "top_color_penetration_layers",
+        "bottom_color_penetration_layers",
+        "support_top_z_distance",
+        "support_bottom_z_distance",
+        "prime_tower_feedrate_factor",
+        "prime_tower_line_width",
+        "prime_tower_ramming_line_width"
+    };
+    return auto_options.count(opt_key.substr(0, opt_key.find('#'))) > 0;
+}
+
+// 0.2 mm nozzle uses 0.4 mm; 0.4 / 0.6 / 0.8 mm nozzles keep the historical 0.8 mm tower line.
+double multi_nozzle_prime_tower_line_width(double nozzle_diameter, double preset_value)
+{
+    return multi_nozzle_value(nozzle_diameter, preset_value, std::array<double, 4> { 0.4, 0.8, 0.8, 0.8 });
+}
+
+// 0 keeps the built-in ramming-width table. Presets stored 0 for every diameter; do not replace that with a width.
+double multi_nozzle_prime_tower_ramming_line_width(double nozzle_diameter, double preset_value)
+{
+    return multi_nozzle_value(nozzle_diameter, preset_value, std::array<double, 4> { 0.0, 0.0, 0.0, 0.0 });
+}
+
+// Feedrate factor is 1 on every standard nozzle. It is not scaled from the process value.
+double multi_nozzle_prime_tower_feedrate_factor(double nozzle_diameter, double preset_value)
+{
+    return multi_nozzle_value(nozzle_diameter, preset_value, std::array<double, 4> { 1.0, 1.0, 1.0, 1.0 });
+}
+
+// The diameters that describe what the machine offers: per-slot where that data is authoritative, per-extruder otherwise.
+static const std::vector<double> *configured_nozzle_diameters(const ConfigBase &config)
+{
+    const auto *per_slot           = config.option<ConfigOptionFloats>("extruder_nozzle_diameter");
+    const auto *slot_counts        = dynamic_cast<const ConfigOptionVector<int> *>(config.option("extruder_nozzle_count"));
+    const auto *hotend_as_extruder = config.option<ConfigOptionBool>("handle_hotend_as_extruder");
+    static const std::vector<int> no_slot_counts;
+    if (per_slot != nullptr && has_authoritative_per_slot_nozzle_diameters(
+        hotend_as_extruder != nullptr && hotend_as_extruder->value,
+        slot_counts != nullptr ? slot_counts->values : no_slot_counts,
+        per_slot->values))
+        return &per_slot->values;
+    const auto *per_extruder = dynamic_cast<const ConfigOptionVector<double> *>(config.option("nozzle_diameter"));
+    return per_extruder != nullptr ? &per_extruder->values : nullptr;
+}
+
+bool has_multiple_configured_nozzle_diameters(const ConfigBase &config)
+{
+    if (! multi_nozzle_diameter_mode_enabled(config))
+        return false;
+
+    const std::vector<double> *diameters = configured_nozzle_diameters(config);
+    if (diameters == nullptr)
+        return false;
+
+    double first = 0.;
+    for (double diameter : *diameters) {
+        if (diameter <= EPSILON)
+            continue;
+        if (first <= EPSILON)
+            first = diameter;
+        else if (std::abs(diameter - first) > EPSILON)
+            return true;
+    }
+    return false;
+}
+
+double primary_nozzle_diameter(const ConfigBase &config)
+{
+    if (const auto *opt = config.option<ConfigOptionString>("printer_variant")) {
+        const double variant = string_to_double_decimal_point(opt->value.c_str());
+        if (variant > 0.0)
+            return variant;
+    }
+    if (const auto *diam = dynamic_cast<const ConfigOptionVector<double> *>(config.option("nozzle_diameter")))
+        if (! diam->values.empty())
+            return diam->values.front();
+    return 0.0;
+}
+
+double layer_grid_nozzle_diameter(const ConfigBase &config)
+{
+    const double primary = primary_nozzle_diameter(config);
+    if (! multi_nozzle_diameter_mode_enabled(config) || primary <= EPSILON)
+        return primary;
+
+    // The grid is pinned to the 0.2 nozzle even when the rack does not carry one: a rack without a 0.2 must still
+    // slice on the grid the 0.2 would need, or every band count rescales the moment one is mounted.
+    return 0.2;
+}
+
+int layer_grid_subdivision(const ConfigBase &config)
+{
+    const double primary = primary_nozzle_diameter(config);
+    const double anchor  = layer_grid_nozzle_diameter(config);
+    if (primary <= EPSILON || anchor <= EPSILON)
+        return 1;
+    // Integer ratio: a fractional one would leave band_size unable to divide the grid evenly.
+    return std::max(1, int(primary / anchor + 0.5));
+}
+
+void sync_mixed_filament_nozzle_diameters(DynamicPrintConfig &config)
+{
+    auto *selected          = config.option<ConfigOptionStrings>("filament_diameter_map");
+    const auto *is_mixed    = config.option<ConfigOptionBools>("filament_is_mixed");
+    const auto *components  = config.option<ConfigOptionStrings>("filament_mixed_components");
+    if (selected == nullptr || is_mixed == nullptr || components == nullptr)
+        return;
+
+    const size_t slot_count = std::max(selected->values.size(), std::max(is_mixed->values.size(), components->values.size()));
+    selected->values.resize(slot_count);
+
+    for (size_t index = 0; index < slot_count; ++index) {
+        if (index >= is_mixed->values.size() || !is_mixed->values[index])
+            continue;
+
+        selected->values[index].clear();
+        if (index >= components->values.size())
+            continue;
+
+        const std::vector<unsigned int> component_ids = parse_mixed_components(components->values[index]);
+        std::string common_diameter;
+        bool valid = component_ids.size() >= 2;
+        for (unsigned int component_id : component_ids) {
+            const size_t component_index = component_id > 0 ? component_id - 1 : size_t(-1);
+            if (component_id == 0 || component_index >= selected->values.size() ||
+                (component_index < is_mixed->values.size() && is_mixed->values[component_index])) {
+                valid = false;
+                break;
+            }
+
+            const std::string &component_diameter = selected->values[component_index];
+            const double diameter = string_to_double_decimal_point(component_diameter.c_str());
+            if (diameter <= 0. || component_diameter.find(';') != std::string::npos) {
+                valid = false;
+                break;
+            }
+
+            const std::string normalized = format_diameter_to_str(diameter);
+            if (common_diameter.empty())
+                common_diameter = normalized;
+            else if (normalized != common_diameter) {
+                valid = false;
+                break;
+            }
+        }
+
+        if (valid)
+            selected->values[index] = common_diameter;
+    }
+}
+
+bool complete_filament_nozzle_diameter_selections(DynamicPrintConfig &config, const std::vector<std::string> &supported_diameters)
+{
+    auto *selected = config.option<ConfigOptionStrings>("filament_diameter_map", true);
+    if (selected == nullptr)
+        return false;
+
+    if (! multi_nozzle_diameter_mode_enabled(config)) {
+        std::fill(selected->values.begin(), selected->values.end(), std::string());
+        return false;
+    }
+
+    std::set<std::string> configured;
+    auto collect_diameters = [&configured](const std::vector<double> &diameters) {
+        for (double diameter : diameters)
+            if (diameter > 0.)
+                configured.insert(format_diameter_to_str(diameter));
+    };
+    const auto *per_slot                 = config.option<ConfigOptionFloats>("extruder_nozzle_diameter");
+    const auto *per_extruder             = dynamic_cast<const ConfigOptionVector<double> *>(config.option("nozzle_diameter"));
+    const auto *per_extruder_slot_counts = dynamic_cast<const ConfigOptionVector<int> *>(config.option("extruder_nozzle_count"));
+    const std::vector<int> empty_slot_counts;
+    const auto *hotend_as_extruder = config.option<ConfigOptionBool>("handle_hotend_as_extruder");
+    if (per_slot != nullptr && has_authoritative_per_slot_nozzle_diameters(
+        hotend_as_extruder != nullptr && hotend_as_extruder->value,
+        per_extruder_slot_counts != nullptr ? per_extruder_slot_counts->values : empty_slot_counts,
+        per_slot->values))
+        collect_diameters(per_slot->values);
+    else if (per_extruder != nullptr)
+        collect_diameters(per_extruder->values);
+
+    const auto *is_mixed = config.option<ConfigOptionBools>("filament_is_mixed");
+    size_t filament_count = selected->values.size();
+    if (is_mixed != nullptr)
+        filament_count = std::max(filament_count, is_mixed->values.size());
+    filament_count = std::max(filament_count, supported_diameters.size());
+    if (const auto *colours = config.option<ConfigOptionStrings>("filament_colour"))
+        filament_count = std::max(filament_count, colours->values.size());
+    selected->values.resize(filament_count);
+
+    if (configured.size() < 2) {
+        std::fill(selected->values.begin(), selected->values.end(), std::string());
+        return false;
+    }
+
+    auto parse_supported = [](const std::string &joined) {
+        std::set<std::string> values;
+        std::string token;
+        std::stringstream stream(joined);
+        while (std::getline(stream, token, ';')) {
+            const double diameter = string_to_double_decimal_point(token.c_str());
+            if (diameter > 0.)
+                values.insert(format_diameter_to_str(diameter));
+        }
+        return values;
+    };
+
+    for (size_t index = 0; index < filament_count; ++index) {
+        if (is_mixed != nullptr && index < is_mixed->values.size() && is_mixed->values[index])
+            continue;
+
+        std::set<std::string> allowed = configured;
+        if (index < supported_diameters.size() && !supported_diameters[index].empty()) {
+            const std::set<std::string> native = parse_supported(supported_diameters[index]);
+            allowed.clear();
+            std::set_intersection(native.begin(), native.end(), configured.begin(), configured.end(),
+                                  std::inserter(allowed, allowed.end()));
+        }
+        if (allowed.empty()) {
+            selected->values[index].clear();
+            continue;
+        }
+
+        const std::string normalized = format_diameter_to_str(string_to_double_decimal_point(selected->values[index].c_str()));
+        if (allowed.count(normalized) != 0) {
+            selected->values[index] = normalized;
+            continue;
+        }
+        selected->values[index] = *std::min_element(allowed.begin(), allowed.end(),
+            [](const std::string &lhs, const std::string &rhs) {
+                return string_to_double_decimal_point(lhs.c_str()) < string_to_double_decimal_point(rhs.c_str());
+            });
+    }
+    sync_mixed_filament_nozzle_diameters(config);
+    return true;
+}
+
+float selected_nozzle_diameter_for_filament(const PrintConfig &config, unsigned int filament_id)
+{
+    if (filament_id == 0 || ! config.multi_nozzle_diameter_mode.value)
+        return 0.f;
+    const size_t fil_idx = filament_id - 1;
+    const auto &selected = config.filament_diameter_map.values;
+    if (fil_idx < selected.size() && !selected[fil_idx].empty() && selected[fil_idx].find(';') == std::string::npos) {
+        const double diameter = string_to_double_decimal_point(selected[fil_idx].c_str());
+        if (diameter > 0.0)
+            return float(diameter);
+    }
+    return 0.f;
+}
+
+bool is_single_ext_multi_nozzle(const ConfigBase &config)
+{
+    const auto *hotend_as_extruder = config.option<ConfigOptionBool>("handle_hotend_as_extruder");
+    if (!hotend_as_extruder || !hotend_as_extruder->value)
+        return false;
+    const auto *nozzle_diameters = dynamic_cast<const ConfigOptionVector<double> *>(config.option("nozzle_diameter"));
+    if (!nozzle_diameters || nozzle_diameters->size() != 1)
+        return false;
+    const auto *max_nozzle_count = dynamic_cast<const ConfigOptionVector<int> *>(config.option("extruder_max_nozzle_count"));
+    return max_nozzle_count && std::any_of(max_nozzle_count->values.begin(), max_nozzle_count->values.end(),
+                                           [](int v) { return v > 1; });
+}
+
+int get_effective_ams_nozzle_idx(const ConfigBase &config)
+{
+    // Static machine config: physical slot reserved for the AMS-fed nozzle (-1 means the model has no AMS slot at all).
+    const auto *ams_idx_opt = dynamic_cast<const ConfigOptionInts *>(config.option("ams_nozzle_idx"));
+    int ams_idx = (ams_idx_opt && !ams_idx_opt->values.empty()) ? ams_idx_opt->get_at(0) : -1;
+    if (ams_idx < 0)
+        return -1;
+
+    // Runtime: an AMS-capable model may currently have no AMS connected. Then every nozzle (including the AMS slot) is a
+    // fixed nozzle, so report -1 to make both the UI and the grouping take the "all fixed nozzles" path consistently.
+    const auto *ams_count_opt = dynamic_cast<const ConfigOptionStrings *>(config.option("extruder_ams_count"));
+    if (!ams_count_opt)
+        return ams_idx; // missing data: stay permissive and keep the configured slot
+    const auto counts = get_extruder_ams_count(ams_count_opt->values);
+    for (const auto &ext : counts)
+        for (const auto &slot : ext)
+            if (slot.second > 0)
+                return ams_idx;
+    return -1;
+}
+
+// Multi-diameter: the machine retraction_length is stored per machine variant, and one variant can carry nozzles of
+// different diameters. Filament rows without their own filament_retraction_length take the length for the diameter of
+// the nozzle the filament is assigned to. Stays permissive where Bambu Studio throws: a row it cannot place is left alone.
+static void apply_multi_nozzle_retraction_length(const DynamicPrintConfig &config, const ConfigOption *filament_retraction,
+                                                 ConfigOption *retraction)
+{
+    auto       *ret = dynamic_cast<ConfigOptionVector<double> *>(retraction);
+    const auto *fil = dynamic_cast<const ConfigOptionVectorBase *>(filament_retraction);
+    if (ret == nullptr || fil == nullptr)
+        return;
+    const auto *self_index = config.option<ConfigOptionInts>("filament_self_index");
+    const auto *selected   = config.option<ConfigOptionStrings>("filament_diameter_map");
+    if (self_index == nullptr || selected == nullptr || self_index->values.size() != ret->values.size())
+        return;
+
+    for (size_t row = 0; row < ret->values.size(); ++row) {
+        if (!fil->is_nil(row))
+            continue;
+        const int filament_id = self_index->values[row];
+        if (filament_id < 1 || size_t(filament_id) > selected->values.size())
+            continue;
+        const std::string &diameter_str = selected->values[filament_id - 1];
+        if (diameter_str.empty() || diameter_str.find(';') != std::string::npos)
+            continue;
+        const double diameter = string_to_double_decimal_point(diameter_str.c_str());
+        ret->values[row] = multi_nozzle_retraction_length(diameter, ret->values[row]);
+    }
 }
 
 
@@ -3570,6 +4002,20 @@ void PrintConfigDef::init_fff_params()
     def->min      = 0;
     def->mode     = comAdvanced;
     def->set_default_value(new ConfigOptionFloats{10});
+
+    // Bambu nozzle rack (H3C): how a hotend parked on the rack is cooled, and whether the next one is pre-heated.
+    def          = this->add("filament_idle_travel_cooling_enabled", coBools);
+    def->label   = L("Idle travel cooling");
+    def->tooltip = L("When filament change length is zero, perform idle travel cooling to help the nozzle cool down. "
+                     "Disabling this will turn off the heater directly without the cooling travel.");
+    def->mode    = comAdvanced;
+    def->set_default_value(new ConfigOptionBools{true});
+
+    def          = this->add("filament_pre_heating_enabled", coBools);
+    def->label   = L("Pre-heating when extruder change");
+    def->tooltip = L("Pre-heat the hotend during the idle period before an extruder change.");
+    def->mode    = comAdvanced;
+    def->set_default_value(new ConfigOptionBools{true});
 
     def = this->add("filament_is_support", coBools);
     def->label = L("Support material");
@@ -9076,6 +9522,65 @@ void PrintConfigDef::init_fff_params()
     def->mode = comDevelop;
     def->set_default_value(new ConfigOptionBool(false));
 
+    // Bambu Studio 2.9 mixed nozzle diameters. Project-level keys (PresetBundle s_project_options), not preset keys.
+    def = this->add("multi_nozzle_diameter_mode", coBool);
+    def->label = "Multi nozzle diameter mode";
+    def->tooltip = "Let one plate print with several nozzle diameters. When disabled, the machine is treated as offering a "
+                   "single nozzle diameter and slicing keeps the single-diameter behavior.";
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionBool { false });
+
+    def = this->add("filament_diameter_map", coStrings);
+    def->label = "Filament selected nozzle diameters";
+    def->tooltip = "Per-filament explicitly selected nozzle diameter. Empty means not selected.";
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionStrings {});
+
+    def = this->add("extruder_nozzle_diameter", coFloats);
+    def->label = "Extruder nozzle diameter";
+    def->tooltip = "Per-slot nozzle diameter, flat list in physical nozzle order. Lets one extruder mix nozzles of different "
+                   "diameters; falls back to nozzle_diameter when not provided.";
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionFloats{ 0.4 });
+
+    def = this->add("extruder_nozzle_slot", coInts);
+    def->label = "Extruder nozzle slot";
+    def->tooltip = "Physical slot index for each installed nozzle (flat list, same order as extruder_nozzle_volume_type). "
+                   "Makes group_id equal the physical slot even when some slots are empty; falls back to dense ordering when not provided.";
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionInts{});
+
+    def = this->add("ams_nozzle_idx", coInts);
+    def->label = "AMS nozzle slot";
+    def->tooltip = "Physical slot of the AMS-fed nozzle on a nozzle-rack printer. -1 when the printer has no AMS slot.";
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionInts{ 0 });
+
+    def = this->add("printer_nozzle_diameter_mode", coString);
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("hotend_cooling_rate_on_rack", coFloats);
+    def->nullable = true;
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionFloatsNullable{2});
+
+    def = this->add("machine_switch_extruder_time", coFloat);
+    def->label = L("Extruder switch time");
+    def->tooltip = L("Time to switch extruder. For statistics only");
+    def->sidetext = L("s");
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(5));
+
+    def = this->add("extruder_clearance_max_radius", coFloat);
+    def->label = L("Max Radius");
+    def->tooltip = L("Max clearance radius around extruder. Used for collision avoidance in by-object printing.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(68));
+
     // filament_max_temperature_drop_when_ec: inert (default {0}, passed into the injector context but
     // never consumed). Registered inert-only (comDevelop); not wired into any estimator read, and not
     // added to any per-variant expansion list.
@@ -10701,6 +11206,14 @@ void DynamicPrintConfig::normalize_fdm_1()
     if (auto *opt_gcode_resolution = this->opt<ConfigOptionFloat>("resolution", false); opt_gcode_resolution)
         // Resolution will be above 1um.
         opt_gcode_resolution->value = std::max(opt_gcode_resolution->value, 0.001);
+
+    // BBS multi-diameter: a printer offering a single nozzle diameter has to slice exactly as it did before
+    // multi-diameter printing existed. Per-filament selections are the only input that could still make it look
+    // otherwise - a project saved on another machine, a hand-edited config - so they are dropped here, at the one
+    // entrance every slicing path shares, instead of being second-guessed by every consumer.
+    if (auto *selected = this->option<ConfigOptionStrings>("filament_diameter_map");
+        selected != nullptr && ! selected->values.empty() && ! has_multiple_configured_nozzle_diameters(*this))
+        std::fill(selected->values.begin(), selected->values.end(), std::string());
 
     return;
 }
@@ -12607,6 +13120,9 @@ void compute_filament_override_value(const std::string& opt_key, const ConfigOpt
 
     auto opt_copy = opt_new_machine->clone();
     opt_copy->apply_override(opt_new_filament, f_map_indices);
+    // Bambu Studio 2.9 mixed nozzle diameters: the retraction length follows the nozzle a filament prints with.
+    if (opt_key == "retraction_length" && multi_nozzle_diameter_mode_enabled(new_full_config))
+        apply_multi_nozzle_retraction_length(new_full_config, opt_new_filament, opt_copy);
     bool changed = *opt_old_machine != *opt_copy;
 
     if (changed) {

@@ -151,6 +151,14 @@ static std::vector<std::string> s_project_options {
     // Per-filament physical-nozzle choice the grouping engine writes back; project-level so a
     // saved project round-trips the assignment alongside filament_map/filament_volume_map.
     "filament_nozzle_map",
+    // Bambu Studio 2.9 mixed nozzle diameters: the project gate, the per-filament selected diameters and the
+    // per-slot description of the nozzles installed in the selected printer.
+    "filament_diameter_map",
+    "multi_nozzle_diameter_mode",
+    "extruder_nozzle_count",
+    "extruder_nozzle_volume_type",
+    "extruder_nozzle_diameter",
+    "extruder_nozzle_slot",
     // Filament Track Switch device state: whether the switch is installed and ready, and
     // whether dynamic per-nozzle filament mapping is active. Persisted with the project and
     // restored from a saved 3mf; reset to false on load and set true only by live device sync.
@@ -181,7 +189,9 @@ static std::vector<std::string> s_project_options {
 // state (it must NOT be added). curr_bed_type is deliberately NOT in this list: the receiver
 // keeps its own bed type when loading a published project. The published-mode project_config
 // assertions in tests/libslic3r/test_preset_bundle_loading.cpp guard both directions.
-static std::vector<std::string> s_project_options_published{"wipe_tower_x", "wipe_tower_y", "wipe_tower_rotation_angle"};
+static std::vector<std::string> s_project_options_published{"wipe_tower_x", "wipe_tower_y", "wipe_tower_rotation_angle",
+    // A published mixed-diameter project keeps its per-filament nozzle selection.
+    "filament_diameter_map", "multi_nozzle_diameter_mode"};
 
 //Orca: add custom as default
 const char *PresetBundle::ORCA_DEFAULT_BUNDLE = "Custom";

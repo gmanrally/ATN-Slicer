@@ -103,10 +103,21 @@ bool has_extruder_layer_heights(const PrintConfig &config)
 
 bool has_extruder_layer_heights(const PrintConfig &config, const std::vector<unsigned int> &used_filaments)
 {
-    return std::any_of(used_filaments.begin(), used_filaments.end(), [&](unsigned int filament) {
-        return !config.extruder_layer_height.values.empty() &&
-               config.extruder_layer_height.get_at(layer_height_extruder(config, filament + 1)) > 0.;
-    });
+    if (std::any_of(used_filaments.begin(), used_filaments.end(), [&](unsigned int filament) {
+            return !config.extruder_layer_height.values.empty() &&
+                   config.extruder_layer_height.get_at(layer_height_extruder(config, filament + 1)) > 0.;
+        }))
+        return true;
+    // Bambu Studio 2.9 mixed diameters: a used filament whose nozzle differs from the preset's primary diameter prints
+    // at its own derived band height, so the plate needs the per-filament layer schedule.
+    if (config.multi_nozzle_diameter_mode.value) {
+        const double primary = primary_nozzle_diameter(config);
+        if (primary > EPSILON)
+            return std::any_of(used_filaments.begin(), used_filaments.end(), [&](unsigned int filament) {
+                return std::abs(nozzle_diameter_for_filament(config, int(filament) + 1, true) - primary) > EPSILON;
+            });
+    }
+    return false;
 }
 
 bool has_extruder_layer_heights(const PrintObject &object)
@@ -124,7 +135,13 @@ double extruder_layer_height_for_filament(const PrintConfig &config, unsigned in
     const size_t extruder = layer_height_extruder(config, filament);
     const auto &heights = config.extruder_layer_height.values;
     const double height = heights.empty() ? 0. : config.extruder_layer_height.get_at(extruder);
-    return height == 0. ? fallback : height;
+    if (height != 0.)
+        return height;
+    // Bambu Studio 2.9 mixed diameters: without an explicit height the filament prints at the band its nozzle takes on
+    // the grid of the authored layer height. The primary nozzle's band is the authored height itself.
+    if (const double derived = derived_nozzle_layer_height(config, filament, fallback); derived > 0.)
+        return derived;
+    return fallback;
 }
 
 double extruder_layer_height_grid(const PrintConfig &config, double fallback, const std::vector<unsigned int> &used_filaments)
@@ -161,8 +178,75 @@ bool AdaptiveLayerHeightRange::contains(double height) const
     return height >= min_height - EPSILON && height <= max_height + EPSILON;
 }
 
+AdaptiveLayerHeightRange adaptive_layer_height_range(double nozzle_diameter)
+{
+    return { 0.2 * nozzle_diameter, 0.7 * nozzle_diameter };
+}
+
+float support_top_z_for_nozzle(double nozzle_diameter)
+{
+    static constexpr std::pair<double, float> table[] = {{0.2, 0.1f}, {0.4, 0.2f}, {0.6, 0.2f}, {0.8, 0.4f}};
+    const std::pair<double, float> *best = &table[0];
+    for (const std::pair<double, float> &entry : table)
+        if (std::abs(entry.first - nozzle_diameter) < std::abs(best->first - nozzle_diameter))
+            best = &entry;
+    return best->second;
+}
+
+bool has_multiple_used_nozzle_diameters(const PrintConfig &print_config, const std::vector<unsigned int> &filament_ids)
+{
+    double first = 0.;
+    for (unsigned int filament_id : filament_ids) {
+        const double diameter = nozzle_diameter_for_filament(print_config, int(filament_id) + 1, true);
+        if (diameter <= EPSILON)
+            continue;
+        if (first <= EPSILON)
+            first = diameter;
+        else if (std::abs(diameter - first) > EPSILON)
+            return true;
+    }
+    return false;
+}
+
+size_t adaptive_layer_band_size(double nozzle_diameter, double min_nozzle_diameter, double base_layer_height)
+{
+    if (nozzle_diameter <= EPSILON || min_nozzle_diameter <= EPSILON || base_layer_height <= EPSILON)
+        return 1;
+
+    const AdaptiveLayerHeightRange range = adaptive_layer_height_range(nozzle_diameter);
+    // The layer stack is sliced for the smallest nozzle, so the diameter ratio is the number of layers a larger nozzle
+    // covers with one extrusion.
+    size_t size = size_t(std::max(1., std::floor(nozzle_diameter / min_nozzle_diameter + 0.5)));
+    // A base layer height chosen well below what the smallest nozzle needs leaves the ratio too thin to extrude, so the
+    // band grows until the nozzle can lay it down in one go.
+    while (double(size) * base_layer_height + EPSILON < range.min_height)
+        ++size;
+    // The window wins over the ratio: a band the nozzle cannot extrude is worse than a thinner one.
+    while (size > 1 && double(size) * base_layer_height > range.max_height + EPSILON)
+        -- size;
+    return double(size) * base_layer_height + EPSILON < range.min_height ? 1 : size;
+}
+
+double derived_nozzle_layer_height(const PrintConfig &config, unsigned int filament, double authored_layer_height)
+{
+    if (! config.multi_nozzle_diameter_mode.value || authored_layer_height <= EPSILON)
+        return 0.;
+    const double diameter = nozzle_diameter_for_filament(config, int(filament), true);
+    if (diameter <= EPSILON)
+        return 0.;
+    // The preset's layer height states what the preset's own nozzle lays down. Cutting it into layer_grid_subdivision
+    // steps gives the grid the finest nozzle needs; each nozzle then prints a band of those steps.
+    const double grid = authored_layer_height / double(std::max(1, layer_grid_subdivision(config)));
+    const size_t band = adaptive_layer_band_size(diameter, layer_grid_nozzle_diameter(config), grid);
+    return double(band) * grid;
+}
+
 AdaptiveLayerHeightRange extruder_layer_height_range(const PrintConfig &config, unsigned int filament)
 {
+    // Bambu Studio 2.9 mixed diameters: min/max_layer_height are indexed by extruder, so on a machine carrying more
+    // nozzle diameters than extruders they would describe a different nozzle. The window follows the diameter instead.
+    if (config.multi_nozzle_diameter_mode.value)
+        return adaptive_layer_height_range(nozzle_diameter_for_filament(config, int(filament), true));
     const size_t extruder = layer_height_extruder(config, filament);
     const double nozzle = config.nozzle_diameter.get_at(extruder);
     const double minimum = config.min_layer_height.get_at(extruder);

@@ -102,6 +102,22 @@ struct AdaptiveLayerBand
 
 AdaptiveLayerHeightRange extruder_layer_height_range(const PrintConfig &config, unsigned int filament);
 
+// ---- Bambu Studio 2.9 mixed nozzle diameters ---------------------------------------------------------------------
+// The printable layer height window of a nozzle diameter, derived from the diameter itself:
+// 0.2 -> 0.04..0.14, 0.4 -> 0.08..0.28, 0.6 -> 0.12..0.42, 0.8 -> 0.16..0.56.
+AdaptiveLayerHeightRange adaptive_layer_height_range(double nozzle_diameter);
+// Top gap between support and the object above it for a nozzle diameter. Only 0.2 / 0.4 / 0.6 / 0.8 ship; anything
+// else takes the nearest one.
+float support_top_z_for_nozzle(double nozzle_diameter);
+// True when the filaments handed in (0-based) do not all share one nozzle diameter.
+bool has_multiple_used_nozzle_diameters(const PrintConfig &print_config, const std::vector<unsigned int> &filament_ids);
+// How many base layers one nozzle merges into a single extrusion: the diameter ratio against the grid nozzle, corrected
+// when the resulting thickness falls outside what the nozzle can extrude. 1 when it has to print every layer.
+size_t adaptive_layer_band_size(double nozzle_diameter, double min_nozzle_diameter, double base_layer_height);
+// Layer height a 1-based filament prints at under multi_nozzle_diameter_mode when no explicit extruder_layer_height is
+// set: its nozzle's band on the 0.2 mm-anchored grid of the authored layer height. 0 while the mode is off.
+double derived_nozzle_layer_height(const PrintConfig &config, unsigned int filament, double authored_layer_height);
+
 // Keep only the pieces a nozzle of this diameter could really lay a bead into. Two contours polygonised
 // apart - consecutive slices of a shrinking shape, a slice and the paint covering it - never coincide point
 // for point, and what one has over the other is a fringe of degenerate, near zero area slivers. Offsetting a
