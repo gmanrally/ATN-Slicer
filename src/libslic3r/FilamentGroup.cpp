@@ -52,6 +52,17 @@ namespace Slic3r
         return weighted_color_cost + (filament_id_match ? 0 : 1);
     }
 
+    // A 2.85 mm filament only prints through the TPU285 hotend and a 1.75 mm filament never does.
+    static bool filament_diameter_matches_nozzle_volume(const FilamentGroupUtils::FilamentInfo &filament,
+                                                        NozzleVolumeType volume_type)
+    {
+        if (filament.diameter <= 0.f)
+            return true;
+        const bool uses_285_filament = filament.diameter > 2.5f;
+        const bool uses_285_path     = volume_type == NozzleVolumeType::nvtTPU285;
+        return uses_285_filament == uses_285_path;
+    }
+
     // clear the array and heap,save the groups in heap to the array
     static void change_memoryed_heaps_to_arrays(MemoryedGroupHeap& heap,const int total_filament_num,const std::vector<unsigned int>& used_filaments, std::vector<std::vector<int>>& arrs)
     {
@@ -79,21 +90,32 @@ namespace Slic3r
         return filament_merge_map;
     }
 
-    static uint64_t fnv_hash_nozzle(int volume_type, int is_right_extruder, int loaded_filament = -1)
+    // Semantic hash for the nozzle de-duplication of the enumeration: diameter, flow type, extruder, the
+    // filament loaded and the capacity all decide whether two nozzles are interchangeable.
+    static uint64_t fnv_hash_nozzle(const std::string& diameter, int volume_type, int is_right_extruder, int loaded_filament = -1, int capacity = -1)
     {
         constexpr uint64_t FNV_OFFSET_BASIS = 14695981039346656037ULL;
         constexpr uint64_t FNV_PRIME        = 1099511628211ULL;
         constexpr uint64_t SALT_A           = 0xA5A5A5A5A5A5A5A5ULL;
         constexpr uint64_t SALT_B           = 0x5A5A5A5A5A5A5A5AULL;
         constexpr uint64_t SALT_C           = 0x3C3C3C3C3C3C3C3CULL;
+        constexpr uint64_t SALT_D           = 0x9696969696969696ULL;
 
         uint64_t h = FNV_OFFSET_BASIS;
+        for (unsigned char c : diameter) {
+            h ^= static_cast<uint64_t>(c);
+            h *= FNV_PRIME;
+        }
         h ^= static_cast<uint64_t>(volume_type) + SALT_A;
         h *= FNV_PRIME;
         h ^= static_cast<uint64_t>(is_right_extruder) + SALT_B;
         h *= FNV_PRIME;
         if (loaded_filament >= 0) {
             h ^= static_cast<uint64_t>(loaded_filament) + SALT_C;
+            h *= FNV_PRIME;
+        }
+        if (capacity >= 0) {
+            h ^= static_cast<uint64_t>(capacity) + SALT_D;
             h *= FNV_PRIME;
         }
 
@@ -229,7 +251,9 @@ namespace Slic3r
         for (const auto& nozzle : ctx.nozzle_info.nozzle_list) {
             auto it = ctx.nozzle_info.nozzle_status.find(nozzle.group_id);
             int loaded_filament = (it != ctx.nozzle_info.nozzle_status.end()) ? it->second : -1;
-            uint64_t hash = fnv_hash_nozzle(nozzle.volume_type, nozzle.group_id > 0, loaded_filament);
+            int nozzle_capacity = nozzle.group_id < static_cast<int>(ctx.nozzle_info.per_nozzle_capacity.size()) ?
+                ctx.nozzle_info.per_nozzle_capacity[nozzle.group_id] : -1;
+            uint64_t hash = fnv_hash_nozzle(nozzle.diameter, nozzle.volume_type, nozzle.extruder_id > 0, loaded_filament, nozzle_capacity);
             nozzle_type_count[hash]++;
         }
 
@@ -311,12 +335,13 @@ namespace Slic3r
         std::vector<uint64_t> group_hashs;
 
         std::vector<size_t> nozzles_hash(k);
-        for (const auto& nozzle : ctx.nozzle_info.nozzle_list) {
-            if (nozzle.group_id < k) {
-                auto it = ctx.nozzle_info.nozzle_status.find(nozzle.group_id);
-                int loaded_filament = (it != ctx.nozzle_info.nozzle_status.end()) ? it->second : -1;
-                nozzles_hash[nozzle.group_id] = fnv_hash_nozzle(nozzle.volume_type, nozzle.group_id > 0, loaded_filament);
-            }
+        for (int nozzle_idx = 0; nozzle_idx < k && nozzle_idx < (int)ctx.nozzle_info.nozzle_list.size(); ++nozzle_idx) {
+            const auto& nozzle = ctx.nozzle_info.nozzle_list[nozzle_idx];
+            auto it = ctx.nozzle_info.nozzle_status.find(nozzle.group_id);
+            int loaded_filament = (it != ctx.nozzle_info.nozzle_status.end()) ? it->second : -1;
+            int nozzle_capacity = nozzle_idx < static_cast<int>(ctx.nozzle_info.per_nozzle_capacity.size()) ?
+                ctx.nozzle_info.per_nozzle_capacity[nozzle_idx] : -1;
+            nozzles_hash[nozzle_idx] = fnv_hash_nozzle(nozzle.diameter, nozzle.volume_type, nozzle.extruder_id > 0, loaded_filament, nozzle_capacity);
         }
 
         std::vector<int> best_full_map(ctx.group_info.total_filament_num, ctx.machine_info.master_extruder_id);
@@ -435,6 +460,15 @@ namespace Slic3r
             cluster_size_limit.emplace_back(clusters);
         }
         PAM.set_cluster_group_size(cluster_size_limit);
+
+        // Per-nozzle capacity (single-extruder rack: AMS hotend holds several filaments, fixed hotends one).
+        if (!ctx.nozzle_info.per_nozzle_capacity.empty()) {
+            const auto& cap = ctx.nozzle_info.per_nozzle_capacity;
+            std::vector<int> per_nozzle_max(k, DEFAULT_CLUSTER_SIZE);
+            for (int nz = 0; nz < k; ++nz)
+                per_nozzle_max[nz] = (nz < (int)cap.size()) ? cap[nz] : DEFAULT_CLUSTER_SIZE;
+            PAM.set_max_cluster_size(per_nozzle_max);
+        }
 
         PAM.do_clustering(ctx, m_clustering_budget);
 
@@ -952,26 +986,104 @@ namespace Slic3r
         m_cluster_labels = best_cluster_labels;
     }
 
+    FilamentGroupContext FilamentGroupContext::available_only(std::vector<int>& full_nozzle_ids) const
+    {
+        full_nozzle_ids.clear();
+
+        FilamentGroupContext compact = *this;
+
+        // Keep the installed nozzles only and renumber group_id to a compact [0, k); full_nozzle_ids maps
+        // compact id -> original id.
+        NozzleInfo compact_nozzle_info;
+        for (const auto& nozzle : nozzle_info.nozzle_list) {
+            const int full_id = nozzle.group_id;
+            if (!nozzle.installed)
+                continue;
+
+            const int compact_id = (int)full_nozzle_ids.size();
+            full_nozzle_ids.emplace_back(full_id);
+
+            MultiNozzleUtils::NozzleInfo compact_nozzle = nozzle;
+            compact_nozzle.group_id = compact_id;
+            compact_nozzle_info.nozzle_list.emplace_back(std::move(compact_nozzle));
+            compact_nozzle_info.per_nozzle_capacity.emplace_back(full_id >= 0 && full_id < (int)nozzle_info.per_nozzle_capacity.size() ? nozzle_info.per_nozzle_capacity[full_id] : 1);
+            compact_nozzle_info.extruder_nozzle_list[nozzle.extruder_id].emplace_back(compact_id);
+
+            if (auto it = nozzle_info.nozzle_status.find(full_id); it != nozzle_info.nozzle_status.end())
+                compact_nozzle_info.nozzle_status[compact_id] = it->second;
+        }
+        compact.nozzle_info = std::move(compact_nozzle_info);
+
+        // The flush solver indexes master_extruder_id / prefer_non_model_filament by nozzle id, so they move
+        // to the compact space with nozzle_info (master_extruder_id doubles as the default nozzle slot).
+        auto& machine = compact.machine_info;
+        machine.master_extruder_id = 0;
+        for (int i = 0; i < (int)full_nozzle_ids.size(); ++i)
+            if (full_nozzle_ids[i] == this->machine_info.master_extruder_id) { machine.master_extruder_id = i; break; }
+
+        const auto& full_prefer = this->machine_info.prefer_non_model_filament;
+        machine.prefer_non_model_filament.clear();
+        for (int full_id : full_nozzle_ids)
+            machine.prefer_non_model_filament.push_back(full_id >= 0 && full_id < (int)full_prefer.size() && full_prefer[full_id]);
+
+        return compact;
+    }
+
+    // Map the compact nozzle ids of a filament map back to the original nozzle ids.
+    static void map_to_full_nozzle_ids(std::vector<int>& filament_to_nozzle, const std::vector<int>& full_nozzle_ids)
+    {
+        for (int& nozzle_id : filament_to_nozzle)
+            if (nozzle_id >= 0 && nozzle_id < static_cast<int>(full_nozzle_ids.size()))
+                nozzle_id = full_nozzle_ids[nozzle_id];
+    }
+
     std::vector<int> FilamentGroup::calc_min_flush_group(int* cost)
     {
         auto used_filaments = collect_sorted_used_filaments(ctx.model_info.layer_filaments);
-        int n = (int)used_filaments.size();
-        int k = (int)ctx.nozzle_info.nozzle_list.size();
+        int  n              = (int)used_filaments.size();
+
+        // Group over the installed nozzles only: the enumeration and the clustering treat capacity as a
+        // soft reward, so empty slots must leave the candidate set (which also shrinks k^n).
+        std::vector<int>     full_nozzle_ids; // compact id -> original id
+        FilamentGroupContext available_ctx = ctx.available_only(full_nozzle_ids);
+        if (full_nozzle_ids.empty())
+            throw Slic3r::RuntimeError("No valid nozzle found. Please check nozzle count.");
+
+        FilamentGroup available_group(available_ctx);
+        available_group.get_custom_seq = get_custom_seq;
+        available_group.set_clustering_budget(m_clustering_budget);
+        int k = (int)available_ctx.nozzle_info.nozzle_list.size();
 
         std::unordered_map<int, std::vector<int>> unplaceable_limits;
-        extract_unprintable_limit_indices(ctx.model_info.unprintable_filaments, used_filaments, unplaceable_limits);
-        unplaceable_limits = rebuild_nozzle_unprintables(used_filaments, unplaceable_limits, ctx.group_info.filament_volume_map);
+        extract_unprintable_limit_indices(available_ctx.model_info.unprintable_filaments, used_filaments, unplaceable_limits);
+        unplaceable_limits = available_group.rebuild_nozzle_unprintables(used_filaments, unplaceable_limits, available_ctx.group_info.filament_volume_map);
+
+        // Mixed nozzle diameters: a filament with an explicit nozzle diameter that fits no installed nozzle
+        // (no such diameter on the rack) is an error, not something the soft constraints may place elsewhere.
+        for (int fidx = 0; fidx < n; ++fidx) {
+            const unsigned int filament_id = used_filaments[fidx];
+            if (filament_id >= available_ctx.model_info.selected_nozzle_diameters.size() ||
+                available_ctx.model_info.selected_nozzle_diameters[filament_id].empty())
+                continue;
+            const auto it = unplaceable_limits.find(fidx);
+            if (it != unplaceable_limits.end() && static_cast<int>(it->second.size()) >= k)
+                throw Slic3r::RuntimeError("Nozzle assignment error: no nozzle matches the diameter and flow selected for one of the filaments. Please check the nozzle setup.");
+        }
 
         m_memoryed_heap = MemoryedGroupHeap();
         std::vector<int> result;
 
-        long long estimated = estimate_dedup_enum_count(k, n, ctx);
+        long long estimated = estimate_dedup_enum_count(k, n, available_ctx);
         if (estimated < ENUM_THRESHOLD)
-            result = calc_group_by_enum(k, used_filaments, unplaceable_limits, cost);
+            result = available_group.calc_group_by_enum(k, used_filaments, unplaceable_limits, cost);
         else
-            result = calc_group_by_kmedoids(k, used_filaments, unplaceable_limits, cost);
+            result = available_group.calc_group_by_kmedoids(k, used_filaments, unplaceable_limits, cost);
 
-        change_memoryed_heaps_to_arrays(m_memoryed_heap, ctx.group_info.total_filament_num, used_filaments, m_memoryed_groups);
+        map_to_full_nozzle_ids(result, full_nozzle_ids);
+
+        change_memoryed_heaps_to_arrays(available_group.m_memoryed_heap, ctx.group_info.total_filament_num, used_filaments, m_memoryed_groups);
+        for (auto& memoryed_group : m_memoryed_groups)
+            map_to_full_nozzle_ids(memoryed_group, full_nozzle_ids);
 
         return result;
     }
@@ -1392,9 +1504,17 @@ namespace Slic3r
             std::vector<int> unprintable_nozzles;
             for(size_t nozzle_idx =0 ;nozzle_idx < ctx.nozzle_info.nozzle_list.size(); ++nozzle_idx){
                 auto nozzle_info = ctx.nozzle_info.nozzle_list[nozzle_idx];
+                const unsigned int filament_id = used_filaments[fidx];
+                // Mixed nozzle diameters: the filament may only sit on a nozzle of the diameter it was selected for,
+                // and a 2.85 mm filament only on the TPU285 hotend.
+                const bool diameter_mismatch = filament_id < ctx.model_info.selected_nozzle_diameters.size() &&
+                    !ctx.model_info.selected_nozzle_diameters[filament_id].empty() &&
+                    ctx.model_info.selected_nozzle_diameters[filament_id] != nozzle_info.diameter;
+                const bool filament_diameter_mismatch = filament_id < ctx.model_info.filament_info.size() &&
+                    !filament_diameter_matches_nozzle_volume(ctx.model_info.filament_info[filament_id], nozzle_info.volume_type);
 
                 if(std::find(unexpected_extruders.begin(), unexpected_extruders.end(), nozzle_info.extruder_id)!= unexpected_extruders.end() || (expected_volume!=nvtHybrid && expected_volume != nozzle_info.volume_type) ||
-                  (unprintable_volumes.count(nozzle_info.volume_type) != 0))
+                  filament_diameter_mismatch || (unprintable_volumes.count(nozzle_info.volume_type) != 0) || diameter_mismatch)
                     unprintable_nozzles.push_back(nozzle_idx);
             }
             if(unprintable_nozzles.empty())
@@ -1417,9 +1537,239 @@ namespace Slic3r
         auto used_filaments = collect_sorted_used_filaments(ctx.model_info.layer_filaments);
         for(size_t idx = 0; idx < used_filaments.size(); ++idx)
             new_ctx.model_info.unprintable_filaments[1 - filament_extruder_map[used_filaments[idx]]].insert(used_filaments[idx]);
-        new_ctx.machine_info.max_group_size.assign(new_ctx.machine_info.max_group_size.size(), std::numeric_limits<int>::max());
+        // Finite "no extra limit" value: INT_MAX overflows have_enough_size() and disables the per-nozzle
+        // capacity that spreads the fixed nozzles.
+        int group_cap = std::max(1, new_ctx.group_info.total_filament_num);
+        new_ctx.machine_info.max_group_size.assign(new_ctx.machine_info.max_group_size.size(), group_cap);
         FilamentGroup fg(new_ctx);
         return fg.calc_filament_group_for_flush();
+    }
+
+    std::vector<int> calc_filament_group_for_nozzle_match(FilamentGroupContext &ctx)
+    {
+        using namespace FlushPredict;
+
+        auto             used_filaments = collect_sorted_used_filaments(ctx.model_info.layer_filaments);
+
+        struct LoadedNozzle {
+            const NozzleLoadedFilamentInfo*     filament;
+            MultiNozzleUtils::NozzleInfo        nozzle;
+        };
+
+        std::unordered_map<int, std::vector<const NozzleLoadedFilamentInfo *>> loaded_filament_map;
+        for (const auto &loaded : ctx.machine_info.nozzle_loaded_filaments) {
+            if (loaded.valid)
+                loaded_filament_map[loaded.nozzle_id].emplace_back(&loaded);
+        }
+
+        std::vector<LoadedNozzle> loaded_nozzles;
+        for (const auto &nozzle : ctx.nozzle_info.nozzle_list) {
+            auto loaded = loaded_filament_map.find(nozzle.group_id);
+            if (!nozzle.installed || loaded == loaded_filament_map.end())
+                continue;
+            for (const auto* filament : loaded->second)
+                loaded_nozzles.push_back({ filament, nozzle });
+        }
+
+        if (used_filaments.empty() || loaded_nozzles.empty()) {
+            FilamentGroup fg(ctx);
+            return fg.calc_filament_group_for_flush();
+        }
+
+        std::vector<int> l_nodes(used_filaments.size());
+        std::iota(l_nodes.begin(), l_nodes.end(), 0);
+        std::vector<int> r_nodes(loaded_nozzles.size());
+        std::iota(r_nodes.begin(), r_nodes.end(), 0);
+
+        // Multi-diameter hard constraint, shared by the loaded-nozzle matching and the unmatched
+        // fallback: a filament may only sit on a nozzle whose diameter its preset works at. Type and
+        // color alone carry no diameter information, so without this a 0.4-only filament can be
+        // matched onto a loaded 0.2 nozzle just because both hold the same material.
+        auto diameter_matches = [&ctx](int filament_id, const MultiNozzleUtils::NozzleInfo &nozzle) {
+            if (filament_id < 0 || filament_id >= static_cast<int>(ctx.model_info.selected_nozzle_diameters.size()))
+                return true;
+            const std::string &selected = ctx.model_info.selected_nozzle_diameters[filament_id];
+            return selected.empty() || selected == nozzle.diameter;
+        };
+
+        auto can_match = [&ctx, &used_filaments, &loaded_nozzles, &diameter_matches](int used_filament_idx, int loaded_idx) {
+            int         filament_id = used_filaments[used_filament_idx];
+            const auto &model       = ctx.model_info.filament_info[filament_id];
+            const auto &loaded      = *loaded_nozzles[loaded_idx].filament;
+            const auto &nozzle      = loaded_nozzles[loaded_idx].nozzle;
+
+            if (model.type != loaded.type || model.is_support != loaded.is_support)
+                return false;
+
+            if (!diameter_matches(filament_id, nozzle))
+                return false;
+
+            if (!filament_diameter_matches_nozzle_volume(model, nozzle.volume_type))
+                return false;
+
+            if (nozzle.extruder_id >= 0 && nozzle.extruder_id < static_cast<int>(ctx.model_info.unprintable_filaments.size()) &&
+                ctx.model_info.unprintable_filaments[nozzle.extruder_id].count(filament_id) != 0)
+                return false;
+
+            if (filament_id >= 0 && filament_id < static_cast<int>(ctx.group_info.filament_volume_map.size())) {
+                NozzleVolumeType expected_volume = static_cast<NozzleVolumeType>(ctx.group_info.filament_volume_map[filament_id]);
+                if (expected_volume != nvtHybrid && expected_volume != nozzle.volume_type) return false;
+            }
+
+            auto volume_iter = ctx.model_info.unprintable_volumes.find(filament_id);
+            if (volume_iter != ctx.model_info.unprintable_volumes.end() && volume_iter->second.count(nozzle.volume_type) != 0) return false;
+
+            return true;
+        };
+
+        std::vector<float> nozzle_secondary_tray_penalty(loaded_nozzles.size(), 0.0f);
+        {
+            std::unordered_set<int> seen_fixed_nozzle_groups;
+            for (size_t j = 0; j < loaded_nozzles.size(); ++j) {
+                const int group_id = loaded_nozzles[j].nozzle.group_id;
+                const int cap = (group_id >= 0 && group_id < static_cast<int>(ctx.nozzle_info.per_nozzle_capacity.size()))
+                                    ? ctx.nozzle_info.per_nozzle_capacity[group_id]
+                                    : 1;
+                if (cap <= 1 && !seen_fixed_nozzle_groups.insert(group_id).second)
+                    nozzle_secondary_tray_penalty[j] = 1.0f;
+            }
+        }
+        std::vector<std::vector<float>> cost_matrix(used_filaments.size(), std::vector<float>(loaded_nozzles.size(), 0.0f));
+        std::unordered_map<int, std::vector<int>> unlink_limits;
+        for (size_t i = 0; i < used_filaments.size(); ++i) {
+            const int   filament_id = used_filaments[i];
+            const auto &model       = ctx.model_info.filament_info[filament_id];
+            const std::string model_filament_id = filament_id < ctx.model_info.filament_ids.size()
+                                                      ? ctx.model_info.filament_ids[filament_id]
+                                                      : std::string();
+            for (size_t j = 0; j < loaded_nozzles.size(); ++j) {
+                if (!can_match(static_cast<int>(i), static_cast<int>(j))) {
+                    unlink_limits[static_cast<int>(i)].emplace_back(static_cast<int>(j));
+                    continue;
+                }
+                const auto &loaded = *loaded_nozzles[j].filament;
+                float       cost   = calc_color_distance(RGBColor(model.color.r, model.color.g, model.color.b), RGBColor(loaded.color.r, loaded.color.g, loaded.color.b));
+                cost_matrix[i][j] = calc_match_mode_cost(cost, model_filament_id, loaded.filament_id,
+                                                         static_cast<int>(used_filaments.size())) +
+                                    nozzle_secondary_tray_penalty[j];
+            }
+        }
+
+        auto build_match_result = [&ctx, &used_filaments, &loaded_nozzles, &diameter_matches, &cost_matrix, &nozzle_secondary_tray_penalty](const std::vector<int> &match) {
+            std::vector<int> group(ctx.group_info.total_filament_num, ctx.machine_info.master_extruder_id);
+            std::unordered_map<int, int> remaining_capacity;
+
+            for (const auto& nozzle : ctx.nozzle_info.nozzle_list) {
+                int cap = 1;
+                if (nozzle.group_id >= 0 && nozzle.group_id < static_cast<int>(ctx.nozzle_info.per_nozzle_capacity.size()))
+                    cap = ctx.nozzle_info.per_nozzle_capacity[nozzle.group_id];
+                remaining_capacity[nozzle.group_id] = cap;
+            }
+
+            auto append_virtual_nozzle = [&ctx](const MultiNozzleUtils::NozzleInfo& source_nozzle) {
+                const int group_id = static_cast<int>(ctx.nozzle_info.nozzle_list.size());
+                MultiNozzleUtils::NozzleInfo virtual_nozzle = source_nozzle;
+                virtual_nozzle.group_id  = group_id;
+                virtual_nozzle.installed = true;
+                ctx.nozzle_info.nozzle_list.emplace_back(std::move(virtual_nozzle));
+                ctx.nozzle_info.per_nozzle_capacity.emplace_back(1);
+                return group_id;
+            };
+
+            auto can_place_unloaded = [&ctx, &diameter_matches](int filament_id, const MultiNozzleUtils::NozzleInfo& nozzle) {
+                if (!nozzle.installed)
+                    return false;
+                if (!diameter_matches(filament_id, nozzle))
+                    return false;
+                if (!filament_diameter_matches_nozzle_volume(ctx.model_info.filament_info[filament_id], nozzle.volume_type))
+                    return false;
+                if (nozzle.extruder_id >= 0 && nozzle.extruder_id < static_cast<int>(ctx.model_info.unprintable_filaments.size()) &&
+                    ctx.model_info.unprintable_filaments[nozzle.extruder_id].count(filament_id) != 0)
+                    return false;
+                if (filament_id >= 0 && filament_id < static_cast<int>(ctx.group_info.filament_volume_map.size())) {
+                    NozzleVolumeType expected_volume = static_cast<NozzleVolumeType>(ctx.group_info.filament_volume_map[filament_id]);
+                    if (expected_volume != nvtHybrid && expected_volume != nozzle.volume_type) return false;
+                }
+                auto volume_iter = ctx.model_info.unprintable_volumes.find(filament_id);
+                if (volume_iter != ctx.model_info.unprintable_volumes.end() && volume_iter->second.count(nozzle.volume_type) != 0) return false;
+                return true;
+            };
+
+            auto is_fixed_nozzle = [&ctx](const MultiNozzleUtils::NozzleInfo& nozzle) {
+                if (nozzle.group_id >= 0 && nozzle.group_id < static_cast<int>(ctx.nozzle_info.per_nozzle_capacity.size()))
+                    return ctx.nozzle_info.per_nozzle_capacity[nozzle.group_id] <= 1;
+                return true;
+            };
+
+            auto assign_unmatched = [&](int filament_id) {
+                std::optional<MultiNozzleUtils::NozzleInfo> virtual_nozzle_source;
+                for (bool prefer_fixed : { true, false }) {
+                    for (const auto& nozzle : ctx.nozzle_info.nozzle_list) {
+                        if (is_fixed_nozzle(nozzle) != prefer_fixed)
+                            continue;
+                        if (!can_place_unloaded(filament_id, nozzle))
+                            continue;
+
+                        if (!virtual_nozzle_source)
+                            virtual_nozzle_source = nozzle;
+
+                        int& cap = remaining_capacity[nozzle.group_id];
+                        if (cap <= 0)
+                            continue;
+                        --cap;
+                        return nozzle.group_id;
+                    }
+                }
+
+                if (virtual_nozzle_source)
+                    return append_virtual_nozzle(*virtual_nozzle_source);
+
+                throw Slic3r::RuntimeError("Nozzle assignment error: no compatible nozzle is available for the unmatched filament. Please check the nozzle setup or regroup.");
+            };
+
+            std::vector<size_t> matched_indices;
+            std::vector<size_t> unmatched_indices;
+            for (size_t idx = 0; idx < match.size(); ++idx) {
+                if (match[idx] == MaxFlowGraph::INVALID_ID)
+                    unmatched_indices.push_back(idx);
+                else
+                    matched_indices.push_back(idx);
+            }
+
+            std::stable_sort(matched_indices.begin(), matched_indices.end(), [&](size_t a, size_t b) {
+                const float pen_a = nozzle_secondary_tray_penalty[match[a]];
+                const float pen_b = nozzle_secondary_tray_penalty[match[b]];
+                if (pen_a != pen_b)
+                    return pen_a < pen_b;
+                const float cost_a = cost_matrix[a][match[a]];
+                const float cost_b = cost_matrix[b][match[b]];
+                if (cost_a != cost_b)
+                    return cost_a < cost_b;
+                return match[a] < match[b];
+            });
+
+            for (size_t idx : matched_indices) {
+                const int filament_id = used_filaments[idx];
+                const auto& matched_nozzle = loaded_nozzles[match[idx]].nozzle;
+                int& cap = remaining_capacity[matched_nozzle.group_id];
+                if (cap > 0) {
+                    --cap;
+                    group[filament_id] = matched_nozzle.group_id;
+                } else {
+                    unmatched_indices.push_back(idx);
+                }
+            }
+
+            for (size_t idx : unmatched_indices) {
+                const int filament_id = used_filaments[idx];
+                group[filament_id] = assign_unmatched(static_cast<int>(filament_id));
+            }
+            return group;
+        };
+
+        std::vector<int> v_capacity(loaded_nozzles.size(), 1);
+        MatchModeGroupSolver solver(cost_matrix, l_nodes, r_nodes, v_capacity, unlink_limits);
+        return build_match_result(solver.solve());
     }
 
     std::vector<FilamentPlanRes> plan_filament_nozzle_mapping_and_order(const FilamentGroupContext &ctx)
@@ -1560,7 +1910,10 @@ namespace Slic3r
         for(size_t idx = 0; idx < used_filaments.size(); ++idx)
             new_ctx.model_info.unprintable_filaments[1 - filament_map_manual[used_filaments[idx]]].insert(used_filaments[idx]);
 
-        new_ctx.machine_info.max_group_size.assign(new_ctx.machine_info.max_group_size.size(), std::numeric_limits<int>::max());
+        // Finite "no extra limit" value: INT_MAX overflows have_enough_size() and disables the per-nozzle
+        // capacity that spreads the fixed nozzles.
+        int group_cap = std::max(1, new_ctx.group_info.total_filament_num);
+        new_ctx.machine_info.max_group_size.assign(new_ctx.machine_info.max_group_size.size(), group_cap);
         FilamentGroup fg(new_ctx);
         return fg.calc_filament_group_for_flush();
     }

@@ -82,6 +82,8 @@ namespace Slic3r
             std::vector<std::vector<unsigned int>> layer_filaments;
             std::vector<FilamentGroupUtils::FilamentInfo> filament_info;
             std::vector<std::string> filament_ids;
+            // Per filament, the nozzle diameter it was selected to print with ("0.4"); empty = no constraint.
+            std::vector<std::string> selected_nozzle_diameters;
             std::vector<std::set<int>> unprintable_filaments;
             std::map<int, std::set<NozzleVolumeType>> unprintable_volumes;
         } model_info;
@@ -99,6 +101,7 @@ namespace Slic3r
         struct MachineInfo {
             std::vector<int> max_group_size;
             std::vector<std::vector<FilamentGroupUtils::MachineFilamentInfo>> machine_filament_info;
+            std::vector<FilamentGroupUtils::NozzleLoadedFilamentInfo>         nozzle_loaded_filaments;
             std::vector<bool> prefer_non_model_filament;
             int master_extruder_id;
         } machine_info;
@@ -116,7 +119,14 @@ namespace Slic3r
             std::map<int, std::vector<int>> extruder_nozzle_list;
             std::vector<MultiNozzleUtils::NozzleInfo> nozzle_list;
             std::unordered_map<int, int> nozzle_status;
+            // Explicit per-nozzle filament capacity, indexed by nozzle group_id (== nozzle_list index).
+            // Single-extruder rack (H3C): AMS hotend = AMS slots + native Ext, fixed hotends = 1, empty
+            // slots = 0. Empty -> fall back to the flush-based heuristic.
+            std::vector<int> per_nozzle_capacity;
         } nozzle_info;
+
+        // Keep the installed nozzles only, renumbered to a compact [0, k); full_nozzle_ids maps compact -> original id.
+        FilamentGroupContext available_only(std::vector<int>& full_nozzle_ids) const;
     };
 
     std::vector<int> select_best_group_for_ams(const std::vector<std::vector<int>> &filament_to_nozzles,
@@ -206,6 +216,11 @@ namespace Slic3r
     std::vector<int> calc_filament_group_for_manual_multi_nozzle(const std::vector<int>& filament_map_manual,const FilamentGroupContext& ctx);
 
     std::vector<int> calc_filament_group_for_match_multi_nozzle(const FilamentGroupContext& ctx);
+
+    // Bambu H3C single-extruder rack (Bambu Studio 2.9): match the project filaments onto the filaments the
+    // printer reports loaded in its hotends; without that report, or for unmatched filaments, fall back to
+    // the flush-minimising placement. May append virtual nozzles to ctx.
+    std::vector<int> calc_filament_group_for_nozzle_match(FilamentGroupContext &ctx);
 
     struct FilamentPlanRes
     {

@@ -39,6 +39,9 @@ namespace Slic3r
             // algorithm does not read it yet; defaulted so a default-built FilamentInfo
             // is deterministic. The nozzle-centric engine consumes it later.
             FilamentUsageType usage_type = FilamentUsageType::ModelOnly;
+            // Filament diameter in mm (1.75 or 2.85): a 2.85 mm filament belongs on the TPU285 hotend and
+            // a 1.75 mm one never does. 0 = unknown, no constraint.
+            float diameter{0.f};
         };
 
         struct MachineFilamentInfo: public FilamentInfo {
@@ -50,6 +53,27 @@ namespace Slic3r
             // Ignores filament_id, so slots of the same type and colour but different sub-types are
             // interchangeable candidates for one filament.
             bool operator<(const MachineFilamentInfo& other) const;
+        };
+
+        // A filament the printer reports loaded in one of its hotends (Bambu H3C rack). Feeds the
+        // nozzle-match grouping; empty when the printer is not connected.
+        struct NozzleLoadedFilamentInfo : public FilamentInfo
+        {
+            int         nozzle_id = -1;
+            std::string filament_id;
+            bool        valid = false;
+
+            bool operator==(const NozzleLoadedFilamentInfo& other) const
+            {
+                return nozzle_id == other.nozzle_id &&
+                    filament_id == other.filament_id &&
+                    valid == other.valid &&
+                    color == other.color &&
+                    type == other.type &&
+                    is_support == other.is_support &&
+                    usage_type == other.usage_type &&
+                    diameter == other.diameter;
+            }
         };
 
 

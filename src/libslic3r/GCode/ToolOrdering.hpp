@@ -342,6 +342,10 @@ public:
     // extruder-level std::vector<int>. Callers derive the 0/1-based extruder map via
     // result.get_extruder_map(). unprintable_volumes / nozzle_status default empty for the static
     // path; the per-layer engine supplies non-empty values.
+    // Bambu Studio 2.9: give the first tower layer a filament when the multi-diameter ladder left it without
+    // object extrusions, so G-code export does not skip the layer the tower foundation is planned on.
+    void seed_first_tower_layer(unsigned int filament);
+
     static MultiNozzleUtils::LayeredNozzleGroupResult get_recommended_filament_maps(const std::vector<std::vector<unsigned int>>& layer_filaments, const Print* print,const FilamentMapMode mode, const std::vector<std::set<int>>& physical_unprintables, const std::vector<std::set<int>>& geometric_unprintables, const std::map<int, std::set<NozzleVolumeType>>& unprintable_volumes = {}, const std::unordered_map<int, int>& nozzle_status = {});
 
     // Wrap stitched per-layer filament->nozzle maps from a sequential (by-object) selector regroup

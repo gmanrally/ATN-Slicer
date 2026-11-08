@@ -33,6 +33,7 @@ struct NozzleInfo
     NozzleVolumeType volume_type;
     int              extruder_id{-1}; // logical extruder id
     int              group_id{-1};    // logical nozzle id
+    bool             installed{true}; // false: the physical slot carries no nozzle (placeholder, never assigned)
 
     std::string serialize() const;
 
@@ -129,6 +130,9 @@ private:
     std::vector<int>                       _default_filament_nozzle_map; // global filament -> nozzle map
     std::vector<unsigned int>              _used_filaments;              // all used filament indices
     std::vector<NozzleInfo>                _nozzle_list;                 // global nozzle list
+    // Bambu H3C (Bambu Studio 2.9): one real extruder drives a rack of hotends, and every hotend behaves as
+    // its own "extruder" for the ordering and g-code logic, so are_filaments_same_extruder compares nozzles.
+    bool                                   handle_nozzle_as_extruder{false};
 
 public:
     LayeredNozzleGroupResult(bool support_dynamic_map = false) : NozzleGroupResultBase(support_dynamic_map) {}
@@ -137,14 +141,16 @@ public:
     static std::optional<LayeredNozzleGroupResult> create(
         const std::vector<int>&          filament_nozzle_map,
         const std::vector<NozzleInfo>&   nozzle_list,
-        const std::vector<unsigned int>& used_filaments);
+        const std::vector<unsigned int>& used_filaments,
+        bool                             handle_nozzle_as_extruder = false);
 
     // Selector: built from per-layer maps (each layer may differ).
     static std::optional<LayeredNozzleGroupResult> create(
         const std::vector<std::vector<int>>&          layer_filament_nozzle_maps,
         const std::vector<NozzleInfo>&                nozzle_list,
         const std::vector<unsigned int>&              used_filaments,
-        const std::vector<std::vector<unsigned int>>& layer_filament_sequences);
+        const std::vector<std::vector<unsigned int>>& layer_filament_sequences,
+        bool                                          handle_nozzle_as_extruder = false);
 
     // Multi-nozzle without selector: resolve each requested logical nozzle to a physical nozzle.
     static std::optional<LayeredNozzleGroupResult> create(
@@ -153,10 +159,12 @@ public:
         const std::vector<int>&                             filament_volume_map,
         const std::vector<int>&                             filament_nozzle_map,
         const std::vector<std::map<NozzleVolumeType, int>>& nozzle_count,
-        float                                               diameter);
+        float                                               diameter,
+        bool                                                handle_nozzle_as_extruder = false);
 
     bool are_filaments_same_extruder(int filament_id1, int filament_id2, int layer_id = -1) const;
     bool are_filaments_same_nozzle(int filament_id1, int filament_id2, int layer_id = -1) const;
+    bool is_handle_nozzle_as_extruder() const { return handle_nozzle_as_extruder; }
     int get_extruder_count() const override;
 
     std::vector<NozzleInfo> get_used_nozzles_in_extruder(int target_extruder_id = -1) const override;
@@ -285,6 +293,20 @@ std::vector<NozzleInfo> build_nozzle_list(double diameter, const std::vector<int
 // Load nozzle infos from a gcode.3mf, handling backward compatibility with older 3mf that did not
 // record standalone <nozzle> tags: falls back to the per-filament group_id/diameter/volume_type, and
 // (for the oldest single-nozzle 3mf) to the filament_map + extruder volume types + nozzle diameters.
+// Build the nozzle list from the per-slot params (extruder_nozzle_count / _volume_type / _diameter / _slot):
+// group_id == physical slot, empty slots become uninstalled placeholders. Returns empty when the params are
+// absent or inconsistent (the caller falls back to the per-extruder nozzle groups).
+std::vector<NozzleInfo> build_nozzle_list_from_extruder_nozzles(const PrintConfig& print_config);
+// Fully-manual mode compatibility: turn an old "group key" filament_nozzle_map into indices of the per-slot
+// nozzle list. Filaments sharing a key share a nozzle; a new key takes the first installed, free,
+// (extruder + flow) compatible nozzle. Idempotent: a map that already holds valid indices is returned as is.
+// Returns empty when it cannot be resolved.
+std::vector<int> resolve_manual_nozzle_map_to_index(
+    const PrintConfig&               config,
+    const std::vector<unsigned int>& used_filaments,
+    const std::vector<int>&          filament_map_1based,
+    const std::vector<int>&          filament_volume_map,
+    const std::vector<int>&          filament_nozzle_key_map);
 std::vector<NozzleInfo> load_nozzle_infos_with_compatibility(
     const std::vector<NozzleInfo>& nozzle_infos,
     const std::vector<FilamentInfo>& filament_infos,
