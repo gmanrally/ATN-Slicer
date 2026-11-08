@@ -1919,6 +1919,8 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionInts,                ams_nozzle_idx))
     // Cooling rate (C/s) of a hotend parked on the rack, per extruder variant.
     ((ConfigOptionFloatsNullable,      hotend_cooling_rate_on_rack))
+    // Idle temperature floor (C) per filament for a hotend parked on the rack; negative = no extra floor.
+    ((ConfigOptionFloats,              min_temperature_when_ec))
     // Time to switch extruder, statistics only.
     ((ConfigOptionFloat,               machine_switch_extruder_time))
     ((ConfigOptionInts,                printer_extruder_id))

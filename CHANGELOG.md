@@ -19,9 +19,23 @@ How this is used:
   (converted from Bambu Studio 2.9), its bed model and its device capabilities. Tool
   changes use Bambu's hotend remap, the prime tower addresses hotends as tools, the
   dedicated 2.85 mm TPU hotend is a selectable nozzle variant, and retraction state is
-  tracked per hotend. Not yet ported from Bambu Studio: per-hotend layer heights and
-  mixed nozzle sizes on the H3C (the slicer refuses mixed per-tool heights on Bambu
-  printers until their prime tower can print them). Untested on H3C hardware.
+  tracked per hotend. Untested on H3C hardware.
+- **Mixed nozzle sizes in one print (H3C, H2C, H2D/X2D), ported from Bambu Studio 2.9.**
+  With the project's mixed nozzle diameter mode on, each filament is assigned the nozzle
+  diameter it is printed with and the slicer derives everything from it: layer heights
+  per nozzle (a 0.2 mm hotend prints 0.1 mm layers while a 0.4 mm hotend prints 0.2 mm
+  layers in the same print, merged on one layer grid), line widths scaled from the
+  preset's nozzle to the printing nozzle, wall counts, top/bottom shells, retraction,
+  ironing inset and support gaps per nozzle. Filament grouping knows the hotend rack
+  slot by slot (installed nozzles, diameters, the AMS-fed hotend's capacity, the
+  2.85 mm TPU hotend) and only places a filament on a nozzle of its diameter. The
+  Bambu prime tower is the 2.9 tower: it merges its slabs per nozzle so coarse and
+  fine hotends share one tower, with Bambu's side scrape, tail slow-down, lift and
+  wipe options. Hotend pre-cooling and pre-heating follow Bambu Studio 2.9 on the rack
+  (per-filament pre-heat opt-out, rack cooling rate, idle temperature floor, cooling
+  sent before the filament change). Command-line and cloud slicing accept
+  `multi_nozzle_diameter_mode` and `filament_diameter_map` in the machine settings;
+  the in-app nozzle selector for the mode is still to come. Untested on hardware.
 - **Everything in OrcaSlicer 2.5.0.** ATN Slicer now tracks upstream 2.5.0: official
   H2C and A2L support, mixed nozzle sizes on the H2D and X2D, Python plugins, belt
   printers, printing several parts at once on IDEX printers, toolhead collision

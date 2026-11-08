@@ -1662,7 +1662,7 @@ static std::vector<std::string> s_Preset_printer_options {
     // Multi-nozzle count + pre-heat model printer options
     "extruder_max_nozzle_count", "handle_hotend_as_extruder", "group_algo_with_time", "enable_pre_heating", "hotend_heating_rate", "hotend_cooling_rate",
     // Bambu nozzle rack / mixed nozzle diameters (Bambu Studio 2.9)
-    "ams_nozzle_idx", "hotend_cooling_rate_on_rack", "machine_switch_extruder_time", "printer_nozzle_diameter_mode", "extruder_clearance_max_radius",
+    "ams_nozzle_idx", "hotend_cooling_rate_on_rack", "min_temperature_when_ec", "machine_switch_extruder_time", "printer_nozzle_diameter_mode", "extruder_clearance_max_radius",
     "machine_hotend_change_time", "machine_prepare_compensation_time",
     // Fast-purge printer flag + device/firmware-facing per-variant extruder-change
     // deretraction speed (unconsumed by the slicer; carried by H2D/A2L/X2D/P2S machine profiles).

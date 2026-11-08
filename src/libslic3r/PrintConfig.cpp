@@ -311,13 +311,17 @@ static const std::vector<double> *configured_nozzle_diameters(const ConfigBase &
     const auto *per_slot           = config.option<ConfigOptionFloats>("extruder_nozzle_diameter");
     const auto *slot_counts        = dynamic_cast<const ConfigOptionVector<int> *>(config.option("extruder_nozzle_count"));
     const auto *hotend_as_extruder = config.option<ConfigOptionBool>("handle_hotend_as_extruder");
+    const auto *per_extruder       = dynamic_cast<const ConfigOptionVector<double> *>(config.option("nozzle_diameter"));
     static const std::vector<int> no_slot_counts;
-    if (per_slot != nullptr && has_authoritative_per_slot_nozzle_diameters(
+    // A per-slot inventory describes every extruder; the option defaults (one slot, 0.4) must not hide the
+    // per-extruder diameters of a printer that never set per-slot data.
+    const bool covers_all_extruders = slot_counts != nullptr && per_extruder != nullptr &&
+                                      slot_counts->values.size() == per_extruder->values.size();
+    if (per_slot != nullptr && covers_all_extruders && has_authoritative_per_slot_nozzle_diameters(
         hotend_as_extruder != nullptr && hotend_as_extruder->value,
         slot_counts != nullptr ? slot_counts->values : no_slot_counts,
         per_slot->values))
         return &per_slot->values;
-    const auto *per_extruder = dynamic_cast<const ConfigOptionVector<double> *>(config.option("nozzle_diameter"));
     return per_extruder != nullptr ? &per_extruder->values : nullptr;
 }
 
@@ -449,7 +453,10 @@ bool complete_filament_nozzle_diameter_selections(DynamicPrintConfig &config, co
     const auto *per_extruder_slot_counts = dynamic_cast<const ConfigOptionVector<int> *>(config.option("extruder_nozzle_count"));
     const std::vector<int> empty_slot_counts;
     const auto *hotend_as_extruder = config.option<ConfigOptionBool>("handle_hotend_as_extruder");
-    if (per_slot != nullptr && has_authoritative_per_slot_nozzle_diameters(
+    // The per-slot inventory counts only when it describes every extruder (see configured_nozzle_diameters()).
+    const bool covers_all_extruders = per_extruder_slot_counts != nullptr && per_extruder != nullptr &&
+                                      per_extruder_slot_counts->values.size() == per_extruder->values.size();
+    if (per_slot != nullptr && covers_all_extruders && has_authoritative_per_slot_nozzle_diameters(
         hotend_as_extruder != nullptr && hotend_as_extruder->value,
         per_extruder_slot_counts != nullptr ? per_extruder_slot_counts->values : empty_slot_counts,
         per_slot->values))
@@ -9770,6 +9777,11 @@ void PrintConfigDef::init_fff_params()
     def->mode = comDevelop;
     def->set_default_value(new ConfigOptionFloatsNullable{2});
 
+    // Idle temperature floor (C) per filament for a hotend parked between uses on a nozzle rack; negative = none.
+    def = this->add("min_temperature_when_ec", coFloats);
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionFloats{-1});
+
     def = this->add("machine_switch_extruder_time", coFloat);
     def->label = L("Extruder switch time");
     def->tooltip = L("Time to switch extruder. For statistics only");
@@ -13555,7 +13567,12 @@ std::map<std::string, std::string> validate(const FullPrintConfig &cfg, bool und
         for (size_t i = 0; i < sizeof(widths) / sizeof(widths[i]); ++ i) {
             std::string key(widths[i]);
             double abs_width = cfg.get_abs_value(key, max_nozzle_diameter);
-            double allowed_max = (key == "bridge_line_width") ? min_nozzle_diameter : MAX_LINE_WIDTH_MULTIPLIER * max_nozzle_diameter;
+            // Mixed nozzle diameters: absolute widths are authored for the preset's nozzle and scaled per printing
+            // nozzle at slicing time (Flow::extrusion_width_for_nozzle), so the bridge width is checked against the
+            // preset's nozzle here and against the scaled width per region in Print::validate().
+            const bool mixed_nozzle_diameters = multi_nozzle_diameter_mode_enabled(cfg) && has_multiple_configured_nozzle_diameters(cfg);
+            double allowed_max = (key == "bridge_line_width") ? (mixed_nozzle_diameters ? max_nozzle_diameter : min_nozzle_diameter)
+                                                              : MAX_LINE_WIDTH_MULTIPLIER * max_nozzle_diameter;
             if (abs_width > allowed_max) {
                 if (key == "bridge_line_width")
                     error_message.emplace(key, _u8L("Bridge line width must not exceed nozzle diameter: ") + std::to_string(abs_width));

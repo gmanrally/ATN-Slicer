@@ -991,8 +991,8 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
                 int next_filament_id;
                 int last_nozzle_id;
                 int next_nozzle_id;
-                int extruder_id; // partition key for the pre-heat/pre-cool region (extruder or hotend), not
-                                 // necessarily a real extruder id
+                int extruder_id;    // real logical extruder, used for the heating / cooling rates
+                int idle_chain_key; // Bambu H3C (hotends as extruders): the filament id "M104 I" targets; other machines: extruder_id
                 bool ignore_cooling_before_tower = false;
             };
 
@@ -1004,7 +1004,7 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
                 const std::vector<std::string>& filament_types_,
                 const MultiNozzleUtils::LayeredNozzleGroupResult& nozzle_group_result_,
                 const std::vector<int>& filament_nozzle_temps_,
-                const std::vector<int>& filament_nozzle_temps_initial_layer_,
+                const std::vector<unsigned char>& filament_pre_heating_enabled_,
                 const std::vector<int>& physical_extruder_map_,
                 int valid_machine_id_,
                 float inject_time_threshold_,
@@ -1012,11 +1012,12 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
                 bool has_filament_switcher_,
                 const std::vector<int>& pre_cooling_temp_,
                 const std::vector<double>& cooling_rate_,
+                const std::vector<double>& cooling_rate_on_rack_,
                 const std::vector<double>& heating_rate_,
                 const std::vector<std::pair<unsigned int, unsigned int>>& skippable_blocks_,
                 const std::vector<int>& extruder_max_nozzle_count_,
                 const std::vector<double>& filament_preheat_temperature_delta_,
-                const std::vector<double>& filament_max_temperature_drop_when_ec_,
+                const std::vector<double>& filament_min_temperature_when_ec_,
                 unsigned int machine_start_gcode_end_id_,
                 unsigned int machine_end_gcode_start_id_,
                 const std::vector<ExtruderType>& extruder_types_,
@@ -1026,7 +1027,7 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
                 filament_types(filament_types_),
                 nozzle_group_result(nozzle_group_result_),
                 filament_nozzle_temps(filament_nozzle_temps_),
-                filament_nozzle_temps_initial_layer(filament_nozzle_temps_initial_layer_),
+                filament_pre_heating_enabled(filament_pre_heating_enabled_),
                 physical_extruder_map(physical_extruder_map_),
                 valid_machine_id(valid_machine_id_),
                 inject_time_threshold(inject_time_threshold_),
@@ -1034,11 +1035,12 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
                 has_filament_switcher(has_filament_switcher_),
                 filament_pre_cooling_temps(pre_cooling_temp_),
                 cooling_rate(cooling_rate_),
+                cooling_rate_on_rack(cooling_rate_on_rack_),
                 heating_rate(heating_rate_),
                 skippable_blocks(skippable_blocks_),
                 extruder_max_nozzle_count(extruder_max_nozzle_count_),
                 filament_preheat_temperature_delta(filament_preheat_temperature_delta_),
-                filament_max_temperature_drop_when_ec(filament_max_temperature_drop_when_ec_),
+                filament_min_temperature_when_ec(filament_min_temperature_when_ec_),
                 machine_start_gcode_end_id(machine_start_gcode_end_id_),
                 machine_end_gcode_start_id(machine_end_gcode_start_id_),
                 extruder_types(extruder_types_),
@@ -1052,23 +1054,28 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
             const std::vector<std::string>& filament_types;
             const MultiNozzleUtils::LayeredNozzleGroupResult& nozzle_group_result;
             const std::vector<int>& filament_nozzle_temps;
-            const std::vector<int>& filament_nozzle_temps_initial_layer;
+            // Per-filament opt-out of pre-heating (Bambu H3C). Shorter than the filament count means "enabled".
+            const std::vector<unsigned char>& filament_pre_heating_enabled;
             const std::vector<int>& physical_extruder_map;
             const int valid_machine_id;
             const float inject_time_threshold;
             const bool handle_hotend_as_extruder;
             const bool has_filament_switcher;
-            const std::vector<double>& cooling_rate;
+            const std::vector<double>& cooling_rate;         // C/s right after extruding (hotend still on the toolhead)
+            const std::vector<double>& cooling_rate_on_rack; // C/s once the hotend is completely free (parked on the rack)
             const std::vector<double>& heating_rate;
             const std::vector<int>& filament_pre_cooling_temps; // target cooling temp during post extrusion
             const std::vector<std::pair<unsigned int, unsigned int>>& skippable_blocks;
             const std::vector<int>& extruder_max_nozzle_count;
             const std::vector<double>& filament_preheat_temperature_delta;
-            const std::vector<double>& filament_max_temperature_drop_when_ec;
+            const std::vector<double>& filament_min_temperature_when_ec; // per-filament idle floor; negative means no extra floor
             const unsigned int machine_start_gcode_end_id;
             const unsigned int machine_end_gcode_start_id;
             const std::vector<ExtruderType>& extruder_types;
             const std::vector<double>& nozzle_diameter;
+
+            // Known filament (has a nozzle temperature); -1 is the start / end g-code sentinel.
+            bool has_filament(int filament_id) const { return filament_id >= 0 && filament_id < (int) filament_nozzle_temps.size(); }
 
             void inject_cooling_heating_command(
                 TimeProcessor::InsertedLinesMap& inserted_operation_lines,
@@ -1080,7 +1087,16 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
             );
 
             void build_by_filament_blocks(const std::vector<ExtruderPreHeating::FilamentUsageBlock>& filament_usage_blocks);
-            void build_by_extruder_blocks(const std::vector<ExtruderPreHeating::ExtruderUsageBlcok>& extruder_usage_blocks);
+            void build_by_extruder_blocks(
+                const std::vector<ExtruderPreHeating::FilamentUsageBlock>& filament_usage_blocks,
+                const std::vector<ExtruderPreHeating::ExtruderUsageBlcok>& extruder_usage_blocks);
+            // Bambu H3C: an idle window between two uses of one filament may contain a nozzle change; borrow its
+            // bounds so the cool-down lands at the nozzle change and the pre-heat may stop short of the print temperature.
+            void attach_nc_bounds_if_gap_crosses_nozzle_change(
+                ExtruderFreeBlock& idle,
+                const ExtruderPreHeating::FilamentUsageBlock& prev,
+                const ExtruderPreHeating::FilamentUsageBlock& next,
+                const std::vector<ExtruderPreHeating::ExtruderUsageBlcok>& nc_blocks);
         };
     public:
         class SeamsDetector
@@ -1282,6 +1298,9 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
         std::vector<double> m_nozzle_diameter;
         std::vector<double> m_hotend_cooling_rate{ 2.f };
         std::vector<double> m_hotend_heating_rate{ 2.f };
+        std::vector<double> m_hotend_cooling_rate_on_rack{ 2.f }; // Bambu H3C: cooling of a hotend parked on the rack
+        std::vector<double> m_min_temperature_when_ec{ -1. };     // idle floor in C per filament; negative = none
+        std::vector<unsigned char> m_filament_pre_heating_enabled; // Bambu H3C: per-filament pre-heating opt-out
         std::vector<int> m_filament_pre_cooling_temp{ 0 };
         std::vector<double> m_filament_preheat_temperature_delta;
         bool m_enable_pre_heating{ false };
