@@ -1,0 +1,14 @@
+{
+    "type": "filament",
+    "name": "Generic TPU(2.85mm) @BBL H3C",
+    "inherits": "Generic TPU(2.85mm) @BBL H3C base",
+    "from": "system",
+    "setting_id": "GFSU97_02",
+    "instantiation": "true",
+    "compatible_printers": [
+        "Bambu Lab H3C 0.4 nozzle"
+    ],
+    "filament_extruder_variant": [
+        "Direct Drive TPU285"
+    ]
+}
