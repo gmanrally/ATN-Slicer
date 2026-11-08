@@ -4135,9 +4135,18 @@ int CLI::run(int argc, char **argv)
 
                 for (int eidx = 0; eidx < new_extruder_count; ++eidx) {
                     int index = 0;
+                    // A machine JSON may carry fewer per-extruder entries than extruders (a project that never
+                    // stored nozzle_volume_type): fall back to the first entry / Standard instead of reading
+                    // past the end.
+                    const ExtruderType     extruder_type = extruders.empty() ? ExtruderType::etDirectDrive :
+                        ExtruderType(extruders[size_t(eidx) < extruders.size() ? size_t(eidx) : 0]);
+                    const NozzleVolumeType volume_type   = volume_types.empty() ? NozzleVolumeType::nvtStandard :
+                        NozzleVolumeType(volume_types[size_t(eidx) < volume_types.size() ? size_t(eidx) : 0]);
                     if (m_print_config.has("printer_extruder_id") && m_print_config.has("printer_extruder_variant"))
-                        index = m_print_config.get_index_for_extruder(eidx + 1, "printer_extruder_id", ExtruderType(extruders[eidx]), NozzleVolumeType(volume_types[eidx]), "printer_extruder_variant");
-                    nozzle_flush_dataset[eidx] = nozzle_flush_dataset_full[index];
+                        index = m_print_config.get_index_for_extruder(eidx + 1, "printer_extruder_id", extruder_type, volume_type, "printer_extruder_variant");
+                    if (index < 0 || index >= (int) nozzle_flush_dataset_full.size())
+                        index = 0;
+                    nozzle_flush_dataset[eidx] = nozzle_flush_dataset_full.empty() ? 0 : nozzle_flush_dataset_full[index];
                 }
             }
 
@@ -4384,6 +4393,86 @@ int CLI::run(int argc, char **argv)
             }
         }
     }
+    // Mixed nozzle diameters (Bambu Studio 2.9): filament_diameter_map holds the nozzle diameter each filament was
+    // selected to print with. The caller (project / cloud worker) supplies it through the machine settings; here the
+    // slots are completed from the filament presets where they are empty and validated against the diameters those
+    // presets support ("... 0.4 nozzle" names in compatible_printers).
+    {
+        auto diameter_from_preset_name = [](const std::string &name) -> std::string {
+            static const std::string suffix = " nozzle";
+            if (name.size() <= suffix.size() || name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0)
+                return {};
+            const size_t nozzle_pos = name.size() - suffix.size();
+            const size_t prev       = name.rfind(' ', nozzle_pos > 0 ? nozzle_pos - 1 : 0);
+            if (prev == std::string::npos || prev + 1 >= nozzle_pos)
+                return {};
+            const double diameter = std::atof(name.substr(prev + 1, nozzle_pos - prev - 1).c_str());
+            return diameter > 0. ? format_diameter_to_str(diameter) : std::string();
+        };
+        auto supported_diameters = [&](const DynamicPrintConfig &filament_config) {
+            std::set<std::string> result;
+            if (const auto *compatible = filament_config.option<ConfigOptionStrings>("compatible_printers"))
+                for (const std::string &printer_name : compatible->values) {
+                    const std::string diameter = diameter_from_preset_name(printer_name);
+                    if (!diameter.empty())
+                        result.insert(diameter);
+                }
+            return result;
+        };
+
+        const auto *mode_opt   = m_print_config.option<ConfigOptionBool>("multi_nozzle_diameter_mode");
+        const bool  mixed_mode = mode_opt != nullptr && mode_opt->value;
+        auto       *dia_map    = m_print_config.option<ConfigOptionStrings>("filament_diameter_map", true);
+        const size_t slot_count = std::max({dia_map->values.size(), load_filaments_config.size(), size_t(std::max(filament_count, 0))});
+        dia_map->values.resize(slot_count);
+
+        if (!mixed_mode) {
+            // One nozzle diameter for the whole print: record the machine preset's diameter so the gcode header is
+            // explicit, and so a project that turns the mode on later starts from a sane map.
+            std::string machine_diameter;
+            if (const auto *variant = m_print_config.option<ConfigOptionString>("printer_variant"); variant != nullptr && std::atof(variant->value.c_str()) > 0.)
+                machine_diameter = format_diameter_to_str(std::atof(variant->value.c_str()));
+            if (machine_diameter.empty())
+                if (const auto *diameters = m_print_config.option<ConfigOptionFloats>("nozzle_diameter"); diameters != nullptr && !diameters->values.empty() && diameters->values.front() > 0.)
+                    machine_diameter = format_diameter_to_str(diameters->values.front());
+            if (!machine_diameter.empty())
+                std::fill(dia_map->values.begin(), dia_map->values.end(), machine_diameter);
+        } else {
+            std::set<std::string> used_diameters;
+            for (size_t index = 0; index < load_filaments_config.size() && index < dia_map->values.size(); ++index) {
+                const std::string filament_name = index < load_filaments_name.size() ? load_filaments_name[index] : std::string();
+                const std::set<std::string> supported = supported_diameters(load_filaments_config[index]);
+                std::string &selected = dia_map->values[index];
+                if (selected.empty()) {
+                    // Fill from the preset itself when that leaves no doubt.
+                    selected = diameter_from_preset_name(filament_name);
+                    if (selected.empty() && supported.size() == 1)
+                        selected = *supported.begin();
+                    if (selected.empty()) {
+                        BOOST_LOG_TRIVIAL(error) << boost::format("mixed nozzle diameter mode: filament slot %1% (%2%) has no selected nozzle diameter and the preset does not imply one") % (index + 1) % filament_name;
+                        record_exit_reson(outfile_dir, CLI_CONFIG_FILE_ERROR, 0, cli_errors[CLI_CONFIG_FILE_ERROR], sliced_info);
+                        flush_and_exit(CLI_CONFIG_FILE_ERROR);
+                    }
+                    BOOST_LOG_TRIVIAL(info) << boost::format("mixed nozzle diameter mode: filament slot %1% (%2%) selected diameter completed to %3%") % (index + 1) % filament_name % selected;
+                }
+                selected = format_diameter_to_str(std::atof(selected.c_str()));
+                if (!supported.empty() && supported.count(selected) == 0) {
+                    std::string supported_str;
+                    for (const std::string &d : supported)
+                        supported_str += (supported_str.empty() ? "" : ",") + d;
+                    BOOST_LOG_TRIVIAL(error) << boost::format("mixed nozzle diameter mode: filament preset %1% (slot %2%) selected diameter %3% is not among the diameters it supports [%4%]") % filament_name % (index + 1) % selected % supported_str;
+                    record_exit_reson(outfile_dir, CLI_CONFIG_FILE_ERROR, 0, cli_errors[CLI_CONFIG_FILE_ERROR], sliced_info);
+                    flush_and_exit(CLI_CONFIG_FILE_ERROR);
+                }
+                used_diameters.insert(selected);
+            }
+            if (used_diameters.size() < 2)
+                BOOST_LOG_TRIVIAL(warning) << boost::format("mixed nozzle diameter mode is on but the filaments select %1% nozzle diameter(s); the print is sliced with one diameter") % used_diameters.size();
+            else
+                BOOST_LOG_TRIVIAL(info) << boost::format("mixed nozzle diameter mode: filaments select %1% nozzle diameters") % used_diameters.size();
+        }
+    }
+
     // Normalizing after importing the 3MFs / AMFs
     m_print_config.normalize_fdm();
 
