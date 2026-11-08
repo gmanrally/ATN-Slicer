@@ -1585,8 +1585,19 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
             extra_unretract = gcodegen.m_config.filament_tower_interface_pre_extrusion_length.get_at(tcr.new_tool);
         else if (is_petg_pre_extrusion)
             extra_unretract = 2.f;
-        std::string toolchange_unretract_str = (extra_unretract > 0.f) ? gcodegen.unretract(extra_unretract) : gcodegen.unretract();
-        check_add_eol(toolchange_unretract_str);
+        // Bambu Studio 2.9: when the diagonal side scrape is active, the E deretract must happen *after* the scrape,
+        // while the Z unlift must still happen *before* it. Split the two so the scrape starts at the current layer Z
+        // but the nozzle only deretracts once it is over the tower side wall.
+        std::string toolchange_unretract_str, side_scrape_unlift_str, side_scrape_deretract_str;
+        if (tcr.side_scrape) {
+            side_scrape_unlift_str    = gcodegen.writer().unlift();
+            side_scrape_deretract_str = gcodegen.unretract(extra_unretract, /*include_unlift=*/false);
+            check_add_eol(side_scrape_unlift_str);
+            check_add_eol(side_scrape_deretract_str);
+        } else {
+            toolchange_unretract_str = (extra_unretract > 0.f) ? gcodegen.unretract(extra_unretract) : gcodegen.unretract();
+            check_add_eol(toolchange_unretract_str);
+        }
 
         gcodegen.placeholder_parser().set("current_extruder", new_filament_id);
         gcodegen.placeholder_parser().set("current_filament_id", new_filament_id);
@@ -1625,7 +1636,10 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
             check_add_eol(start_filament_gcode_str);
         }
 
-        start_filament_gcode_str = start_filament_gcode_str + wipe_next_start_point_str + toolchange_unretract_str;
+        // With the side scrape active, filament_start only carries the Z unlift; the E deretract is
+        // emitted later through the [wipe_tower_deretract_gcode] placeholder (after the scrape).
+        start_filament_gcode_str = start_filament_gcode_str + wipe_next_start_point_str +
+                                   (tcr.side_scrape ? side_scrape_unlift_str : toolchange_unretract_str);
 
         // Orca: the custom change_filament_gcode lifts to the object layer height and the unretract
         // de-hops back to it, so every tower extrusion emitted after it (purge moves, and the wall
@@ -1642,6 +1656,26 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
         config.set_key_value("restore_layer_z_before_toolchange", new ConfigOptionString(restore_layer_z_str));
         config.set_key_value("change_filament_gcode", new ConfigOptionString(toolchange_gcode_str));
         config.set_key_value("filament_start_gcode", new ConfigOptionString(start_filament_gcode_str));
+        config.set_key_value("wipe_tower_deretract_gcode", new ConfigOptionString(tcr.side_scrape ? side_scrape_deretract_str : std::string()));
+
+        // Resolve the two side scrape Z placeholders. The wipe tower computed the scrape against the Z it
+        // planned this layer at, which wipe_tower_no_sparse_layers replaces by a compacted, much lower Z.
+        // Using the planned Z there would send the nozzle up to the object height and leave the rest of the
+        // tower gcode (which carries no Z of its own) printing in mid air.
+        double scrape_z_top = tcr.print_z;
+        double scrape_z_low = tcr.side_scrape_z_low;
+        if (tcr.side_scrape) {
+            if (m_sparse_layers_skipped && m_layer_idx >= 0 && size_t(m_layer_idx) < m_compacted_tower_z.size()) {
+                // Compacted tower: descend the requested depth below the printed tower top, but stay above
+                // the brim chamfer flare at the tower base, which is where the tower reaches out furthest.
+                scrape_z_top = m_compacted_tower_z[m_layer_idx];
+                scrape_z_low = std::max(scrape_z_top - double(tcr.side_scrape_depth),
+                                        compacted_tower_base_z() + double(tcr.side_scrape_min_height_above_base));
+            }
+            scrape_z_low = std::min(scrape_z_low, scrape_z_top);
+        }
+        config.set_key_value("wipe_tower_scrape_z_top", new ConfigOptionString(float_to_string_decimal_point(scrape_z_top, 3)));
+        config.set_key_value("wipe_tower_scrape_z_low", new ConfigOptionString(float_to_string_decimal_point(scrape_z_low, 3)));
         std::string tcr_gcode, tcr_escaped_gcode = gcodegen.placeholder_parser_process("tcr_rotated_gcode", tcr_rotated_gcode, new_filament_id, &config);
         unescape_string_cstyle(tcr_escaped_gcode, tcr_gcode);
         gcode += tower_height_tag(gcodegen, tcr, tcr_gcode);
@@ -2114,6 +2148,17 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
         return gcode_out;
     }
 
+    double WipeTowerIntegration::compacted_tower_base_z() const
+    {
+        // The accumulation in compute_compacted_wipe_tower_z() stays at the base until the first layer that
+        // really prints a tower, so the first entry above the base is that layer's print z.
+        const float base = m_compacted_tower_z.empty() ? 0.f : m_compacted_tower_z.front();
+        for (float z : m_compacted_tower_z)
+            if (z > base + float(EPSILON))
+                return z;
+        return double(base);
+    }
+
     std::string WipeTowerIntegration::prime(GCode &gcodegen)
     {
         std::string gcode;
@@ -2158,6 +2203,10 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
                 }
             }
         } else {
+            // The tower drops layers whose filler nozzle cannot lay down the base layer height, see
+            // WipeTower::plan_tower_ladder(). Such a layer carries no result at all.
+            if (m_tool_changes[m_layer_idx].empty())
+                return gcode;
             // Calculate where the wipe tower layer will be printed. -1 means that print z will not change,
             // resulting in a wipe tower with sparse layers.
             double wipe_tower_z  = -1;
@@ -2190,6 +2239,9 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
     {
         assert(m_layer_idx >= 0);
         if (m_layer_idx >= (int) m_tool_changes.size())
+            return true;
+        // A layer the multi-diameter ladder dropped carries no result at all.
+        if (m_tool_changes[m_layer_idx].empty())
             return true;
 
         bool   ignore_sparse = wipe_tower_layer_is_combined_away(m_tool_changes[m_layer_idx]);

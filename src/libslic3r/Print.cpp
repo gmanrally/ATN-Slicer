@@ -2054,15 +2054,16 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
     // Automatic grouping has not chosen physical tools yet, so their height overrides cannot be resolved.
     if (has_extruder_layer_heights(m_config) && is_BBL_printer() && is_auto_filament_map_mode(m_config.filament_map_mode.value))
         return {L("Assign filaments to extruders manually before using per-extruder layer heights."), nullptr, "filament_map_mode"};
-    // ATN: the Bambu (Type 1) prime tower prints every tool at the plate's layer height, so a coarse
-    // tool would purge below its minimum height on every fine layer. Until that tower learns per-tool
-    // heights (Bambu Studio 2.9 does), a Bambu printer with a prime tower keeps one height for all tools.
-    if (is_BBL_printer() && m_config.enable_prime_tower.value && has_extruder_layer_heights(m_config, layer_filaments)) {
+    // ATN: the Bambu (Type 1) prime tower merges its slabs per NOZZLE DIAMETER (Bambu Studio 2.9), so it follows
+    // the heights that multi_nozzle_diameter_mode derives from the nozzles. Explicit per-extruder heights that
+    // differ from each other have no counterpart in that tower; keep one explicit height for all tools there.
+    if (is_BBL_printer() && m_config.enable_prime_tower.value && has_extruder_layer_heights(m_config) &&
+        has_extruder_layer_heights(m_config, layer_filaments)) {
         std::set<long> heights_um;
         for (unsigned int filament : layer_filaments)
             heights_um.insert(std::lround(extruder_layer_height_for_filament(m_config, filament + 1, m_default_object_config.layer_height.value) * 1000.));
         if (heights_um.size() > 1)
-            return {L("Mixed per-extruder layer heights are not supported yet with the prime tower on Bambu Lab printers. Use one layer height for all tools, or disable the prime tower."), nullptr, "extruder_layer_height"};
+            return {L("Mixed explicit per-extruder layer heights are not supported with the prime tower on Bambu Lab printers. Use one explicit layer height for all tools, let the nozzle diameters set the heights (mixed nozzle diameter mode), or disable the prime tower."), nullptr, "extruder_layer_height"};
     }
     if (has_extruder_layer_heights(m_config, layer_filaments)) {
         if (m_config.spiral_mode)
@@ -2813,10 +2814,14 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
                 const auto &bridge_width_opt = region.config().bridge_line_width;
                 for (FlowRole bridge_role : { frPerimeter, frInfill, frSolidInfill, frTopSolidInfill }) {
                     const double nozzle_diameter = nozzle_diameter_for_filament(m_config, region.extruder(bridge_role), this->is_BBL_printer());
-                    const double bridge_width    = bridge_width_opt.get_abs_value(nozzle_diameter);
+                    // Mixed nozzle diameters: an absolute width is authored for the preset's nozzle and scaled to the
+                    // nozzle that prints it, so validate the width that is really extruded.
+                    const double bridge_width    = Flow::extrusion_width_for_nozzle(bridge_width_opt, float(primary_nozzle_diameter(m_full_print_config)),
+                                                                                    float(nozzle_diameter), m_config.multi_nozzle_diameter_mode.value);
                     if (bridge_width <= 0.)
                         continue;
-                    if (bridge_width > nozzle_diameter) {
+                    // The scaled width goes through float nozzle diameters; 100 % of a 0.4 nozzle must not fail on rounding.
+                    if (bridge_width > nozzle_diameter + EPSILON) {
                         err_msg = L("Bridge line width must not exceed nozzle diameter");
                         return { err_msg, object, "bridge_line_width" };
                     }
@@ -5364,6 +5369,19 @@ bool Print::enable_timelapse_print() const
 }
 
 
+// A multi-diameter first band can leave the first tower layer without object extrusions, and G-code export
+// skips a layer without filaments, so the foundation planned there would never be printed. Seed that layer
+// only when its foundation is emitted: the planner may fold it into the layer above (empty result), and a
+// compacted tower skips it as a sparse layer. Otherwise the layer would become a change without extrusion.
+static void seed_emitted_tower_foundation(WipeTowerData &data, bool sparse_layers_skipped)
+{
+    if (data.tool_changes.empty() || data.tool_changes.front().empty())
+        return;
+    if (sparse_layers_skipped && wipe_tower_layer_is_sparse(data.tool_changes.front()))
+        return;
+    data.tool_ordering.seed_first_tower_layer((unsigned int) data.tool_changes.front().front().new_tool);
+}
+
 void Print::_make_wipe_tower()
 {
     m_wipe_tower_data.clear();
@@ -5379,6 +5397,13 @@ void Print::_make_wipe_tower()
     if (!m_wipe_tower_data.tool_ordering.has_wipe_tower())
         // Don't generate any wipe tower.
         return;
+
+    // Bambu Studio 2.9: keep the raw first tower layer only when that Z also carries real object or support
+    // extrusion; otherwise the multi-diameter ladder may hand it to the first tool change above it.
+    const bool foundation_required =
+        !m_wipe_tower_data.tool_ordering.empty() &&
+        (m_wipe_tower_data.tool_ordering.front().has_object ||
+         m_wipe_tower_data.tool_ordering.front().has_support);
 
     // Check whether there are any layers in m_tool_ordering, which are marked with has_wipe_tower,
     // they print neither object, nor support. Each such layer needs a virtual support layer
@@ -5427,7 +5452,17 @@ void Print::_make_wipe_tower()
                                                   ? float(m_default_region_config.first_layer_flow_ratio)
                                                   : 1.f);
         wipe_tower.set_has_tpu_filament(this->has_tpu_filament());
-        wipe_tower.set_handle_hotend_as_extruder(m_config.handle_hotend_as_extruder.value); // Bambu H3C: M104/M109 I<tool>
+        // Bambu Studio 2.9 mixed nozzle diameters: the tower merges its slabs per nozzle on the objects' layer grid.
+        {
+            const std::vector<unsigned int> tower_filaments = this->layer_height_filaments();
+            wipe_tower.set_foundation_required(foundation_required);
+            wipe_tower.set_multi_diameter_print(m_config.multi_nozzle_diameter_mode.value &&
+                                                has_multiple_used_nozzle_diameters(m_config, tower_filaments));
+            wipe_tower.set_tower_grid_reference_nozzle(float(layer_grid_nozzle_diameter(m_config)));
+            wipe_tower.set_tower_grid_layer_height(m_objects.empty() ? float(m_default_object_config.layer_height.value) :
+                                                                       float(m_objects.front()->slicing_parameters().layer_height));
+            wipe_tower.set_per_nozzle_tower_params(m_config.multi_nozzle_diameter_mode.value);
+        }
         // Per-layer filament->nozzle grouping. sort_and_build_data() above publishes it on the Print
         // for by-layer prints; by-object prints publish only later (psSkirtBrim), so fall back to the
         // ToolOrdering's own copy there. set_extruder() below dereferences it, so it must be set first.
@@ -5457,7 +5492,7 @@ void Print::_make_wipe_tower()
         wipe_tower.set_shared_print_bed(this->get_extruder_shared_printable_polygon());
         // Set the extruder & material properties at the wipe tower object.
         for (size_t i = 0; i < number_of_extruders; ++i)
-            wipe_tower.set_extruder(i, m_config);
+            wipe_tower.set_extruder(i, m_config, i);
 
         // BBS: remove priming logic
         // m_wipe_tower_data.priming = Slic3r::make_unique<std::vector<WipeTower::ToolChangeResult>>(
@@ -5581,6 +5616,12 @@ void Print::_make_wipe_tower()
         // Generate the wipe tower layers.
         m_wipe_tower_data.tool_changes.reserve(m_wipe_tower_data.tool_ordering.layer_tools().size());
         wipe_tower.generate_new(m_wipe_tower_data.tool_changes);
+        seed_emitted_tower_foundation(m_wipe_tower_data, wipe_tower_sparse_layers_skipped(m_config));
+        // generate_new() keeps an empty slot per planned layer for G-code indexing. A tower with no content at all
+        // must still leave tool_changes empty, which consumers read as "no wipe tower was generated".
+        if (std::all_of(m_wipe_tower_data.tool_changes.begin(), m_wipe_tower_data.tool_changes.end(),
+                        [](const std::vector<WipeTower::ToolChangeResult> &layer) { return layer.empty(); }))
+            m_wipe_tower_data.tool_changes.clear();
         m_wipe_tower_data.depth      = wipe_tower.get_depth();
         m_wipe_tower_data.width      = wipe_tower.width();
         m_wipe_tower_data.brim_width = wipe_tower.get_brim_width();

@@ -160,6 +160,8 @@ private:
     WipeTowerIntegration& operator=(const WipeTowerIntegration&);
     std::string append_tcr(GCode &gcodegen, const WipeTower::ToolChangeResult &tcr, int new_extruder_id, double z = -1.) const;
     std::string tower_height_tag(GCode &gcodegen, const WipeTower::ToolChangeResult &tcr, const std::string &tcr_gcode) const;
+    // Print z of the first layer the compacted tower really prints (Bambu side scrape floor).
+    double compacted_tower_base_z() const;
     Polyline generate_path_to_wipe_tower(const Point &start_pos, const Point &end_pos, const BoundingBox &avoid_polygon, const Polygons &bed_polygons) const;
     std::string append_tcr2(GCode &gcodegen, const WipeTower::ToolChangeResult &tcr, int new_extruder_id,
                            double z = -1., std::optional<double> object_z = std::nullopt) const;
@@ -311,7 +313,8 @@ public:
     bool            needs_retraction(const Polyline& travel, ExtrusionRole role, LiftType& lift_type);
     std::string     retract(bool toolchange = false, bool is_last_retraction = false, LiftType lift_type = LiftType::NormalLift, bool apply_instantly = false, ExtrusionRole role = erNone);
     // extra_retract forwards a PETG pre-extrusion over-extrusion; default 0 -> identical to the plain deretract.
-    std::string     unretract(float extra_retract = 0.f) { return m_writer.unlift() + m_writer.unretract(extra_retract); }
+    // include_unlift = false: the side scrape of the Bambu prime tower unlifts before the scrape and deretracts after it.
+    std::string     unretract(float extra_retract = 0.f, bool include_unlift = true) { return (include_unlift ? m_writer.unlift() : std::string()) + m_writer.unretract(extra_retract); }
     std::string     set_extruder(unsigned int extruder_id, double print_z, bool by_object=false, int toolchange_temp_override = -1, bool defer_temp_wait = false);
     // Sets the pressure advance of the filament's extruder variant, if enabled for it.
     // tool addresses one IMEX carriage explicitly. -1 means no carriage: it omits the tool
