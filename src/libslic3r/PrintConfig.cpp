@@ -1151,6 +1151,12 @@ static const t_config_enum_values s_keys_map_WipeTowerWallType{
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(WipeTowerWallType)
 
+static const t_config_enum_values s_keys_map_SideScrapeFace = {
+    {"left_right", sssfLeftRight},
+    {"front_back", sssfFrontBack}
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SideScrapeFace)
+
 static const t_config_enum_values s_keys_map_ExtruderType = {
     { "Direct Drive",   etDirectDrive },
     { "Bowden",        etBowden }
@@ -4016,6 +4022,17 @@ void PrintConfigDef::init_fff_params()
     def->tooltip = L("Pre-heat the hotend during the idle period before an extruder change.");
     def->mode    = comAdvanced;
     def->set_default_value(new ConfigOptionBools{true});
+
+    def          = this->add("filament_prime_tower_speed_factor_curve", coStrings);
+    def->label   = L("Prime tower speed factor curve");
+    def->tooltip = L("Controls the speed factor ramp when priming on the wipe tower after a tool change. "
+                     "Enter comma-separated multipliers of the target speed, one per wipe line. "
+                     "For example: \"0.33,0.375,0.458,0.875,0.875\" means the 1st line runs at 33%, "
+                     "the 2nd at 37.5%, and so on. If fewer than 5 values are given, the last value "
+                     "is reused for remaining lines. Each value is clamped to 0.01 ~ 5.0. "
+                     "Leave empty to use the built-in default curve (0.33, 0.375, 0.458, 0.875, 0.875).");
+    def->mode    = comDevelop;
+    def->set_default_value(new ConfigOptionStrings{""});
 
     def = this->add("filament_is_support", coBools);
     def->label = L("Support material");
@@ -9022,6 +9039,194 @@ void PrintConfigDef::init_fff_params()
     def->min = 2.0;
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionFloat(60.));
+
+    // ---- Bambu Studio 2.9 prime tower options (ported from commit 56a57d00, AGPL-3.0) ----
+    def           = this->add("prime_tower_feedrate_factor", coFloat);
+    def->label    = L("Prime tower feedrate factor");
+    def->tooltip  = L("Feedrate scaling factor for prime/wipe tower extrusion when hotends are handled as extruders. "
+                      "It does not affect all tower travel moves. 1.0 means no change; values below 1.0 slow down, above 1.0 speed up.");
+    def->mode     = comAdvanced;
+    def->min      = 0.01;
+    def->set_default_value(new ConfigOptionFloat(1.));
+
+    def           = this->add("prime_tower_tail_speed_factor", coPercent);
+    def->label    = L("Tail speed factor");
+    def->tooltip  = L("Scale the printing speed of the last section printed each time before the toolhead leaves the prime tower "
+                      "(the length is set by the tail slowdown volume) relative to the tower printing speed. That trailing section "
+                      "may be the outer wall, a tool-change wipe or infill, whichever comes last. Lower values slow it down to soften "
+                      "the flow change when moving back to the model. Does not affect the first layer.");
+    def->sidetext = L("%");
+    def->mode     = comAdvanced;
+    def->min      = 10;
+    def->max      = 100;
+    def->set_default_value(new ConfigOptionPercent(100));
+
+    def           = this->add("prime_tower_tail_slowdown_volume", coFloat);
+    def->label    = L("Tail slowdown volume");
+    def->tooltip  = L("Only the final part printed each time before the toolhead leaves the prime tower, measured as this extruded "
+                      "volume, is slowed down by the tail speed factor; the rest keeps the normal tower speed. That trailing part may "
+                      "be the outer wall, a tool-change wipe or infill. Set to 0 to slow down the whole tower path of each visit. "
+                      "Does not affect the first layer.");
+    def->sidetext = L("mm³");
+    def->mode     = comAdvanced;
+    def->min      = 0;
+    def->set_default_value(new ConfigOptionFloat(10));
+
+    def           = this->add("prime_tower_acceleration", coFloat);
+    def->label    = L("Acceleration");
+    def->tooltip  = L("The acceleration used for prime tower extrusions. Does not affect the first layer. 0 means using the global default acceleration.");
+    def->sidetext = L("mm/s²");
+    def->mode     = comDevelop;
+    def->min      = 0;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
+    def           = this->add("prime_tower_line_width", coFloat);
+    def->label    = L("Line width");
+    def->tooltip  = L("Line width for prime tower normal wiping paths. 0 means auto-calculated from nozzle diameter.");
+    def->sidetext = L("mm");
+    def->mode     = comDevelop;
+    def->min      = 0;
+    def->max      = 5;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
+    def           = this->add("prime_tower_ramming_line_width", coFloat);
+    def->label    = L("Ramming line width");
+    def->tooltip  = L("Line width for prime tower nozzle-change (ramming) paths. 0 means using the default mapping table.");
+    def->sidetext = L("mm");
+    def->mode     = comDevelop;
+    def->min      = 0;
+    def->max      = 5;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
+    def           = this->add("prime_tower_wipe_speed", coFloat);
+    def->label    = L("Wipe speed");
+    def->tooltip  = L("The speed of wipe movement before printing on the prime tower during tool change. 0 means using prime tower max speed.");
+    def->sidetext = L("mm/s");
+    def->mode     = comDevelop;
+    def->min      = 0;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
+    def           = this->add("prime_tower_wipe_distance", coFloat);
+    def->label    = L("Wipe distance");
+    def->tooltip  = L("The wipe path distance during tool change. 0 means using the filament-level wipe distance.");
+    def->sidetext = L("mm");
+    def->mode     = comDevelop;
+    def->min      = 0;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
+    def           = this->add("prime_tower_lift_speed", coFloat);
+    def->mode     = comDevelop;
+    def->set_default_value(new ConfigOptionFloat(90.));
+
+    def = this->add("prime_tower_lift_height", coFloat);
+    def->mode     = comDevelop;
+    def->set_default_value(new ConfigOptionFloat(-1));
+
+    def          = this->add("prime_tower_line_ironing", coBool);
+    def->label   = L("Line ironing");
+    def->tooltip = L("Enable line ironing for prime tower wipe paths");
+    def->mode    = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(true));
+
+    def           = this->add("prime_tower_ironing_speed", coFloat);
+    def->label    = L("Ironing speed");
+    def->tooltip  = L("Speed of prime tower ironing movements");
+    def->sidetext = L("mm/s");
+    def->mode     = comAdvanced;
+    def->min      = 1;
+    def->max      = 100;
+    def->set_default_value(new ConfigOptionFloat(10.));
+
+    def          = this->add("prime_tower_side_scrape", coBool);
+    def->label   = L("Side scrape after tool change");
+    def->tooltip = L("After a tool change and before the wipe line, move the nozzle to the prime tower side wall and "
+                     "do a diagonal lift scrape (travel only, no extrusion). This scrapes the oozed filament stub onto "
+                     "the side wall instead of letting it pile up on the prime tower top surface.");
+    def->mode    = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def                = this->add("prime_tower_side_scrape_face", coEnum);
+    def->label         = L("Side scrape walls");
+    def->tooltip       = L("Which pair of opposite prime tower walls the diagonal scrape runs on. "
+                           "Note that enabling the side scrape always disables depth shrinkage of the prime "
+                           "tower (the outer wall stays at the full depth on every layer), regardless of this "
+                           "setting, so that the scrape can descend safely outside the walls.");
+    def->enum_keys_map = &ConfigOptionEnum<SideScrapeFace>::get_enum_values();
+    def->enum_values.emplace_back("left_right");
+    def->enum_values.emplace_back("front_back");
+    def->enum_labels.emplace_back(L("Left and right"));
+    def->enum_labels.emplace_back(L("Front and back"));
+    def->mode          = comAdvanced;
+    def->set_default_value(new ConfigOptionEnum<SideScrapeFace>(sssfFrontBack));
+
+    def           = this->add("prime_tower_side_scrape_length", coFloat);
+    def->label    = L("Side scrape length");
+    def->tooltip  = L("Horizontal distance the nozzle travels inward from the prime tower side wall during the diagonal scrape.");
+    def->sidetext = L("mm");
+    def->mode     = comAdvanced;
+    def->min      = 0.1;
+    def->max      = 20;
+    def->set_default_value(new ConfigOptionFloat(2.));
+
+    def           = this->add("prime_tower_side_scrape_height", coFloat);
+    def->label    = L("Side scrape lift height");
+    def->tooltip  = L("How far the nozzle descends below the current wipe-tower top before the "
+                      "diagonal scrape. The actual descent is clamped so the nozzle stays above the "
+                      "wipe tower's brim and first layer (avoids hitting the brim or the bed when the "
+                      "tower is still short). Layers with no room left for a descent get no scrape.");
+    def->sidetext = L("mm");
+    def->mode     = comAdvanced;
+    def->min      = 0.1;
+    def->max      = 10;
+    def->set_default_value(new ConfigOptionFloat(1.5));
+
+    def           = this->add("prime_tower_side_scrape_speed", coFloat);
+    def->label    = L("Side scrape speed");
+    def->tooltip  = L("Movement speed of the diagonal side scrape.");
+    def->sidetext = L("mm/s");
+    def->mode     = comAdvanced;
+    def->min      = 1;
+    def->max      = 2000;
+    def->set_default_value(new ConfigOptionFloat(1400.));
+
+    def           = this->add("prime_tower_side_scrape_wall_gap", coFloat);
+    def->label    = L("Side scrape wall gap");
+    def->tooltip  = L("Distance kept between the diagonal side scrape line and the prime tower outer wall. "
+                      "A positive value keeps the scrape outside the wall; the outer wall position is taken as "
+                      "the outermost of the current and previous layer walls at the scrape location so the "
+                      "scrape never cuts into the tower.");
+    def->sidetext = L("mm");
+    def->mode     = comAdvanced;
+    def->min      = -2;
+    def->max      = 10;
+    def->set_default_value(new ConfigOptionFloat(0.2));
+
+    def           = this->add("prime_tower_side_scrape_point_spacing", coFloat);
+    def->label    = L("Side scrape point spacing");
+    def->tooltip  = L("Target distance between consecutive side scrape start points along one side wall. "
+                      "Scrape starts are spread over both side walls so the ooze stubs do not pile up at a "
+                      "single spot. The number of points is derived from this spacing and the length of the "
+                      "straight part of the side wall, so the effective spacing can be smaller than requested "
+                      "when the straight part is short.");
+    def->sidetext = L("mm");
+    def->mode     = comAdvanced;
+    def->min      = 0.5;
+    def->max      = 50;
+    def->set_default_value(new ConfigOptionFloat(1.));
+
+    def           = this->add("prime_tower_side_scrape_along_length", coFloat);
+    def->label    = L("Side scrape along-wall length");
+    def->tooltip  = L("Upper bound for the empty travel along the side wall performed right after the diagonal "
+                      "scrape, before the nozzle moves to the wipe line start. It smears the ooze stub further "
+                      "along the wall. The travel never leaves the straight part of the side wall, so the actual "
+                      "length is only the room left between the scrape start and the end of that straight part. "
+                      "On a rib prime tower the straight part can be just a few millimetres, in which case the "
+                      "travel is much shorter than the value set here.");
+    def->sidetext = L("mm");
+    def->mode     = comAdvanced;
+    def->min      = 0;
+    def->max      = 50;
+    def->set_default_value(new ConfigOptionFloat(2.));
 
     def = this->add("wipe_tower_rotation_angle", coFloat);
     def->label = L("Wipe tower rotation angle");

@@ -1343,6 +1343,12 @@ static std::vector<std::string> s_Preset_print_options{
     "enable_prime_tower",
     "prime_tower_enable_framework",
     "prime_tower_width",
+    // Bambu Studio 2.9 prime tower options
+    "prime_tower_feedrate_factor", "prime_tower_tail_speed_factor", "prime_tower_tail_slowdown_volume", "prime_tower_acceleration",
+    "prime_tower_line_width", "prime_tower_ramming_line_width", "prime_tower_wipe_speed", "prime_tower_wipe_distance",
+    "prime_tower_lift_speed", "prime_tower_lift_height", "prime_tower_line_ironing", "prime_tower_ironing_speed",
+    "prime_tower_side_scrape", "prime_tower_side_scrape_face", "prime_tower_side_scrape_length", "prime_tower_side_scrape_height",
+    "prime_tower_side_scrape_speed", "prime_tower_side_scrape_wall_gap", "prime_tower_side_scrape_point_spacing", "prime_tower_side_scrape_along_length",
     "prime_tower_brim_width",
     "prime_tower_skip_points",
     "prime_volume",
@@ -1539,7 +1545,7 @@ static std::vector<std::string> s_Preset_print_options{
 };
 
 static std::vector<std::string> s_Preset_filament_options {/*"filament_colour", */ "default_filament_colour", "required_nozzle_HRC", "filament_diameter", "pellet_flow_coefficient", "volumetric_speed_coefficients", "filament_type",
-                                                          "filament_soluble", "filament_is_support", "filament_idle_travel_cooling_enabled", "filament_pre_heating_enabled", "filament_printable", "filament_extruder_compatibility",
+                                                          "filament_soluble", "filament_is_support", "filament_idle_travel_cooling_enabled", "filament_pre_heating_enabled", "filament_prime_tower_speed_factor_curve", "filament_printable", "filament_extruder_compatibility",
     "filament_max_volumetric_speed", "filament_adaptive_volumetric_speed",
     "filament_flow_ratio", "filament_density", "filament_adhesiveness_category", "filament_cost", "filament_minimal_purge_on_wipe_tower",
     "filament_tower_interface_pre_extrusion_dist", "filament_tower_interface_pre_extrusion_length", "filament_tower_ironing_area", "filament_tower_interface_purge_volume",

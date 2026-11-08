@@ -603,7 +603,13 @@ enum CounterboreHoleBridgingOption {
     chbNone, chbBridges, chbFilled
 };
 
- enum WipeTowerWallType {
+ // Which pair of opposite prime tower walls the diagonal side scrape runs on (Bambu Studio 2.9).
+enum SideScrapeFace : int {
+    sssfLeftRight = 0,
+    sssfFrontBack
+};
+
+enum WipeTowerWallType {
      wtwRectangle = 0,
      wtwCone,
      wtwRib
@@ -826,6 +832,7 @@ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(CounterboreHoleBridgingOption)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(PrintHostType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(AuthorizationType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(WipeTowerWallType)
+CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SideScrapeFace)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(PerimeterGeneratorType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(ToolChangeOrderingType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(PowerLossRecoveryMode)
@@ -1793,6 +1800,8 @@ PRINT_CONFIG_CLASS_DEFINE(
     // Bambu nozzle-rack hotend change: cool the parked hotend with an idle travel instead of switching its heater off.
     ((ConfigOptionBools,               filament_idle_travel_cooling_enabled))
     ((ConfigOptionBools,               filament_pre_heating_enabled))
+    // Per-filament speed factor ramp of the wipe lines after a tool change (Bambu Studio 2.9).
+    ((ConfigOptionStrings,             filament_prime_tower_speed_factor_curve))
     ((ConfigOptionInts,                filament_map_2)) //used for multi nozzle, map filament to the index identified by extruder+nozzle_volume_type
     //((ConfigOptionInts,                filament_extruder_id))
     ((ConfigOptionStrings,             filament_extruder_variant))
@@ -2161,6 +2170,28 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionPercent,            prime_tower_infill_gap))
     ((ConfigOptionBool,               prime_tower_skip_points))
     ((ConfigOptionBool,               prime_tower_flat_ironing))
+    // Bambu Studio 2.9 prime tower options: per-nozzle tower widths and feedrate, tail slowdown, wipe, lift,
+    // line ironing and the diagonal side scrape after a tool change.
+    ((ConfigOptionFloat,              prime_tower_feedrate_factor))
+    ((ConfigOptionPercent,            prime_tower_tail_speed_factor))
+    ((ConfigOptionFloat,              prime_tower_tail_slowdown_volume))
+    ((ConfigOptionFloat,              prime_tower_acceleration))
+    ((ConfigOptionFloat,              prime_tower_line_width))
+    ((ConfigOptionFloat,              prime_tower_ramming_line_width))
+    ((ConfigOptionFloat,              prime_tower_wipe_speed))
+    ((ConfigOptionFloat,              prime_tower_wipe_distance))
+    ((ConfigOptionFloat,              prime_tower_lift_speed))
+    ((ConfigOptionFloat,              prime_tower_lift_height))
+    ((ConfigOptionBool,               prime_tower_line_ironing))
+    ((ConfigOptionFloat,              prime_tower_ironing_speed))
+    ((ConfigOptionBool,               prime_tower_side_scrape))
+    ((ConfigOptionEnum<SideScrapeFace>, prime_tower_side_scrape_face))
+    ((ConfigOptionFloat,              prime_tower_side_scrape_length))
+    ((ConfigOptionFloat,              prime_tower_side_scrape_height))
+    ((ConfigOptionFloat,              prime_tower_side_scrape_speed))
+    ((ConfigOptionFloat,              prime_tower_side_scrape_wall_gap))
+    ((ConfigOptionFloat,              prime_tower_side_scrape_point_spacing))
+    ((ConfigOptionFloat,              prime_tower_side_scrape_along_length))
     ((ConfigOptionBool,               enable_tower_interface_features))
     ((ConfigOptionBool,               enable_tower_interface_cooldown_during_tower))
     ((ConfigOptionFloat,              wipe_tower_bridging))
