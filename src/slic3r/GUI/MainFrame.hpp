@@ -496,7 +496,6 @@ public:
     void RunScript(wxString js);
 
     //SoftFever
-    void show_device(bool bBBLPrinter);
     void show_farm_window();   // ATN: open the printer-farm dashboard in its own window
     void show_device(bool should_use_native);
     void fit_tab_labels(); // ORCA

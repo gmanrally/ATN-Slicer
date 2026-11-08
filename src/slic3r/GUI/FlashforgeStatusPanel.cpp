@@ -18,6 +18,7 @@
 #include <boost/log/trivial.hpp>
 
 #include "GUI_App.hpp"
+#include "GUI.hpp"   // from_u8 (moved out of GUI_App.hpp upstream)
 #include "I18N.hpp"
 #include "FlashforgeCameraView.hpp"
 #include "../Utils/Flashforge.hpp"

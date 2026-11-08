@@ -119,6 +119,7 @@ enum NozzleFlowType : int
     H_FLOW,
     U_FLOW, // TPU 1.75 High Flow
     E_FLOW, // E3D High Flow
+    T_FLOW, // TPU 2.85 (Bambu H3C). Appended, not BBS's 4: E_FLOW = 4 is serialised in extruder_nozzle_stats
 };
 /* 0.2mm  0.4mm  0.6mm 0.8mm */
 enum NozzleDiameterType : int

@@ -21270,7 +21270,7 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
                                                                    supports_material_station,
                                                                    std::move(slots),
                                                                    project_filaments,
-                                                                   cfg.opt_bool("manual_filament_change"));
+                                                                   physical_printer_config->opt_bool("manual_filament_change"));
         } else if (qidi_send_dialog) {
             qidi_link = std::make_unique<QidiPrinterLink>(*physical_printer_config);
             QidiPrinterState qidi_state;

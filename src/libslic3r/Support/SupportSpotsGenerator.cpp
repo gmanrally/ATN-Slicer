@@ -27,6 +27,7 @@
 
 #include "AABBTreeLines.hpp"
 #include "libslic3r/Layer.hpp"
+#include "libslic3r/Print.hpp" // ATN: detect_floating_extrusions walks the PrintObject's layers and support layers
 
 // #define DETAILED_DEBUG_LOGS
 // #define DEBUG_FILES

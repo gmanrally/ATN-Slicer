@@ -45,16 +45,32 @@ unsigned int Extruder::extruder_id() const
     return 0;
 }
 
+// The park state of a filament belongs to the filament path holding it, i.e. to its hotend. On
+// single-extruder multi-nozzle machines (handle_hotend_as_extruder) filament_map is always all-1, so
+// extruder_id() would collapse every hotend onto one slot. Index by hotend there instead; filaments
+// sharing a hotend still share the slot, which is what happens physically. (Bambu Studio)
+unsigned int Extruder::retracted_slot_id() const
+{
+    assert(m_config);
+    if (m_config->handle_hotend_as_extruder.value && m_id < m_config->filament_nozzle_map.size()) {
+        // filament_nozzle_map is a 0 based index into the nozzle list.
+        const int nozzle_idx = m_config->filament_nozzle_map.get_at(m_id);
+        if (nozzle_idx >= 0 && nozzle_idx < MAXIMUM_EXTRUDER_NUMBER)
+            return unsigned(nozzle_idx);
+    }
+    return extruder_id();
+}
+
 double Extruder::extrude(double dE)
 {
     // BBS
     if (m_share_extruder) {
         if (m_config->use_relative_e_distances)
-            m_share_E[extruder_id()] = 0.;
-        m_share_E[extruder_id()] += dE;
+            m_share_E[retracted_slot_id()] = 0.;
+        m_share_E[retracted_slot_id()] += dE;
         m_absolute_E += dE;
         if (dE < 0.)
-            m_share_retracted[extruder_id()] -= dE;
+            m_share_retracted[retracted_slot_id()] -= dE;
     } else {
         // in case of relative E distances we always reset to 0 before any output
         if (m_config->use_relative_e_distances)
@@ -95,13 +111,13 @@ double Extruder::retract(double length, double restart_extra)
     // BBS
     if (m_share_extruder) {
         if (m_config->use_relative_e_distances)
-            m_share_E[extruder_id()] = 0.;
-        double to_retract = std::max(0., length - m_share_retracted[extruder_id()]);
+            m_share_E[retracted_slot_id()] = 0.;
+        double to_retract = std::max(0., length - m_share_retracted[retracted_slot_id()]);
         m_restart_extra = restart_extra;
         if (to_retract > 0.) {
-            m_share_E[extruder_id()]             -= to_retract;
+            m_share_E[retracted_slot_id()]             -= to_retract;
             m_absolute_E          -= to_retract;
-            m_share_retracted[extruder_id()]     += to_retract;
+            m_share_retracted[retracted_slot_id()]     += to_retract;
         }
         return to_retract;
     } else {
@@ -123,9 +139,9 @@ double Extruder::unretract()
 {
     // BBS
     if (m_share_extruder) {
-        double dE = m_share_retracted[extruder_id()] + m_restart_extra;
+        double dE = m_share_retracted[retracted_slot_id()] + m_restart_extra;
         this->extrude(dE);
-        m_share_retracted[extruder_id()]     = 0.;
+        m_share_retracted[retracted_slot_id()]     = 0.;
         m_restart_extra = 0.;
         return dE;
     } else {

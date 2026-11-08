@@ -369,6 +369,8 @@ public:
     int get_number_of_toolchanges() const { return m_num_tool_changes; }
 
 	void set_has_tpu_filament(bool has_tpu) { m_has_tpu_filament = has_tpu; }
+	// Bambu H3C: the firmware addresses hotends as tools (M104/M109 I<tool>); from BBS.
+	void set_handle_hotend_as_extruder(bool v) { m_handle_hotend_as_extruder = v; }
 
     bool has_tpu_filament() const { return m_has_tpu_filament; }
     struct FilamentParameters {
@@ -604,6 +606,7 @@ private:
     bool                       m_has_filament_switcher = false;
     float                      m_contact_speed   = 20 * 60.f;
     std::vector<int>           m_physical_extruder_map;
+    bool                       m_handle_hotend_as_extruder{false};
 	// Calculates length of extrusion line to extrude given volume
 	float volume_to_length(float volume, float line_width, float layer_height) const {
 		return std::max(0.f, volume / (layer_height * (line_width - layer_height * (1.f - float(M_PI) / 4.f))));

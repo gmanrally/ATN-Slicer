@@ -45,6 +45,7 @@ NozzleFlowType DevNozzle::ToNozzleFlowType(const NozzleVolumeType& type)
         case NozzleVolumeType::nvtHighFlow:    return NozzleFlowType::H_FLOW;
         case NozzleVolumeType::nvtTPUHighFlow: return NozzleFlowType::U_FLOW;
         case NozzleVolumeType::nvtE3DHighFlow: return NozzleFlowType::E_FLOW;
+        case NozzleVolumeType::nvtTPU285: return NozzleFlowType::T_FLOW;
         default: return NozzleFlowType::NONE_FLOWTYPE;
     }
 }
@@ -56,6 +57,7 @@ NozzleVolumeType DevNozzle::ToNozzleVolumeType(const NozzleFlowType& type)
         case NozzleFlowType::H_FLOW: return NozzleVolumeType::nvtHighFlow;
         case NozzleFlowType::U_FLOW: return NozzleVolumeType::nvtTPUHighFlow;
         case NozzleFlowType::E_FLOW: return NozzleVolumeType::nvtE3DHighFlow;
+        case NozzleFlowType::T_FLOW: return NozzleVolumeType::nvtTPU285;
         default: {
             BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << "nozzle flow type None convert to nozzle volume type Standard";
             return NozzleVolumeType::nvtStandard;
@@ -70,6 +72,7 @@ wxString DevNozzle::GetNozzleFlowTypeStr(NozzleFlowType type)
     case NozzleFlowType::S_FLOW: return _L("Standard");
     case NozzleFlowType::U_FLOW: return _L("TPU High Flow");
     case NozzleFlowType::E_FLOW: return _L("E3D High Flow");
+    case NozzleFlowType::T_FLOW: return _L("TPU285");
     default: break;
     }
 
@@ -85,6 +88,7 @@ std::string DevNozzle::GetNozzleFlowTypeString(NozzleFlowType type)
         case NozzleFlowType::S_FLOW: return "Standard";
         case NozzleFlowType::U_FLOW: return "TPU High Flow";
         case NozzleFlowType::E_FLOW: return "E3D High Flow";
+        case NozzleFlowType::T_FLOW: return "TPU285";
         default: return "Unknown";
     }
 }
@@ -98,6 +102,7 @@ std::string DevNozzle::ToNozzleFlowString(const NozzleFlowType& type)
         case NozzleFlowType::H_FLOW: return "High Flow";
         case NozzleFlowType::U_FLOW: return "TPU High Flow";
         case NozzleFlowType::E_FLOW: return "E3D High Flow";
+        case NozzleFlowType::T_FLOW: return "TPU285";
         default: return std::string();
     }
 }
@@ -434,6 +439,7 @@ static std::unordered_map<std::string, NozzleFlowType> _str2_nozzle_flow_type = 
     {"E", NozzleFlowType::H_FLOW}, // E3D high-flow
     {"U", NozzleFlowType::U_FLOW}, // TPU 1.75 high-flow -> nvtTPUHighFlow
     {"B", NozzleFlowType::E_FLOW}, // E3D High Flow -> nvtE3DHighFlow
+    {"T", NozzleFlowType::T_FLOW}, // TPU 2.85 (Bambu H3C) -> nvtTPU285
 };
 
 static std::unordered_map<std::string, NozzleType> _str2_nozzle_type = {

@@ -2024,6 +2024,16 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
     // Automatic grouping has not chosen physical tools yet, so their height overrides cannot be resolved.
     if (has_extruder_layer_heights(m_config) && is_BBL_printer() && is_auto_filament_map_mode(m_config.filament_map_mode.value))
         return {L("Assign filaments to extruders manually before using per-extruder layer heights."), nullptr, "filament_map_mode"};
+    // ATN: the Bambu (Type 1) prime tower prints every tool at the plate's layer height, so a coarse
+    // tool would purge below its minimum height on every fine layer. Until that tower learns per-tool
+    // heights (Bambu Studio 2.9 does), a Bambu printer with a prime tower keeps one height for all tools.
+    if (is_BBL_printer() && m_config.enable_prime_tower.value && has_extruder_layer_heights(m_config, layer_filaments)) {
+        std::set<long> heights_um;
+        for (unsigned int filament : layer_filaments)
+            heights_um.insert(std::lround(extruder_layer_height_for_filament(m_config, filament + 1, m_default_object_config.layer_height.value) * 1000.));
+        if (heights_um.size() > 1)
+            return {L("Mixed per-extruder layer heights are not supported yet with the prime tower on Bambu Lab printers. Use one layer height for all tools, or disable the prime tower."), nullptr, "extruder_layer_height"};
+    }
     if (has_extruder_layer_heights(m_config, layer_filaments)) {
         if (m_config.spiral_mode)
             return {L("Per-extruder layer heights cannot be used with spiral vase mode."), nullptr, "extruder_layer_height"};
@@ -5383,6 +5393,7 @@ void Print::_make_wipe_tower()
                                                   ? float(m_default_region_config.first_layer_flow_ratio)
                                                   : 1.f);
         wipe_tower.set_has_tpu_filament(this->has_tpu_filament());
+        wipe_tower.set_handle_hotend_as_extruder(m_config.handle_hotend_as_extruder.value); // Bambu H3C: M104/M109 I<tool>
         // Per-layer filament->nozzle grouping. sort_and_build_data() above publishes it on the Print
         // for by-layer prints; by-object prints publish only later (psSkirtBrim), so fall back to the
         // ToolOrdering's own copy there. set_extruder() below dereferences it, so it must be set first.

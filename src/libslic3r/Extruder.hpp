@@ -38,14 +38,18 @@ public:
     void set_config_index(int idx);
 
     unsigned int extruder_id() const;
+    // The slot whose park/retract state this filament shares: its hotend on a handle_hotend_as_extruder
+    // machine (filament_map is all-1 there, so extruder_id() would collapse every hotend onto one slot and
+    // a filament would deretract whatever the previous one retracted), otherwise its extruder. From BBS.
+    unsigned int retracted_slot_id() const;
     double extrude(double dE);
     double retract(double length, double restart_extra);
     double unretract();
-    double E() const { return m_share_extruder ? m_share_E[extruder_id()] : m_E; }
+    double E() const { return m_share_extruder ? m_share_E[retracted_slot_id()] : m_E; }
     // E() plus extra, as written to the G-code for the current move. high_precision is the precision of that move,
     // see GCodeWriter::high_precision().
     double E_to_emit(bool high_precision, double extra = 0.);
-    void   reset_E() { m_E = 0.; m_share_E[extruder_id()] = 0.; }
+    void   reset_E() { m_E = 0.; m_share_E[retracted_slot_id()] = 0.; }
     // e_per_mm is extrusion_per_mm = geometric volume * (filament flow ratio / cross-sectional area)  [Doesn't account for print_flow_ratio, or modifiers like bridge flow ratio etc.]
     double e_per_mm(double mm3_per_mm) const { return mm3_per_mm * m_e_per_mm3; }
     // e_per_mm3 is extrusion_per_mm3 = filament flow ratio / cross-sectional area    [Doesn't account for print_flow_ratio, or modifiers like bridge flow ratio etc.]
@@ -65,7 +69,7 @@ public:
     // Share-aware retracted-length readers (for extruders shared between filaments), consumed by GCodeWriter::get_extruder_retracted_length.
     bool   is_share_extruder() const { return m_share_extruder; }
     double get_single_retracted_length() const { return m_retracted; }
-    double get_share_retracted_length() const { return m_share_retracted[extruder_id()]; }
+    double get_share_retracted_length() const { return m_share_retracted[retracted_slot_id()]; }
     // Setters for the PlaceholderParser.
     // Set current extruder position. Only applicable with absolute extruder addressing.
     void   set_position(double e) { m_E = e; }
