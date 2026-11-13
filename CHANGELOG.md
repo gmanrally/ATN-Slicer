@@ -13,13 +13,15 @@ How this is used:
 
 ## Unreleased
 
+## v2.7.0 — 2026-11-13
+
 ### Added
 - **Bambu Lab H3C.** The nine-hotend H3C appears in the printer list with Bambu's
   0.2/0.4/0.6/0.8 nozzle machines, 16 process presets and 135 filament presets
   (converted from Bambu Studio 2.9), its bed model and its device capabilities. Tool
   changes use Bambu's hotend remap, the prime tower addresses hotends as tools, the
   dedicated 2.85 mm TPU hotend is a selectable nozzle variant, and retraction state is
-  tracked per hotend. Untested on H3C hardware.
+  tracked per hotend. Verified on an H3C by a customer during the beta.
 - **Mixed nozzle sizes in one print (H3C, H2C, H2D/X2D), ported from Bambu Studio 2.9.**
   With the project's mixed nozzle diameter mode on, each filament is assigned the nozzle
   diameter it is printed with and the slicer derives everything from it: layer heights
@@ -35,7 +37,9 @@ How this is used:
   (per-filament pre-heat opt-out, rack cooling rate, idle temperature floor, cooling
   sent before the filament change). Command-line and cloud slicing accept
   `multi_nozzle_diameter_mode` and `filament_diameter_map` in the machine settings;
-  the in-app nozzle selector for the mode is still to come. Untested on hardware.
+  the in-app nozzle selector for the mode is still to come. A project saved by Bambu
+  Studio 2.9 with mixed nozzles loads and slices here. Mixed-size prints were verified
+  in slicing only, so please report what you see on the printer.
 - **Everything in OrcaSlicer 2.5.0.** ATN Slicer now tracks upstream 2.5.0: official
   H2C and A2L support, mixed nozzle sizes on the H2D and X2D, Python plugins, belt
   printers, printing several parts at once on IDEX printers, toolhead collision
