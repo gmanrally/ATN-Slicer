@@ -13,6 +13,13 @@ How this is used:
 
 ## Unreleased
 
+### Fixed
+- Prime tower filament-used accounting: the layer-is-printed check introduced with the
+  Bambu Studio 2.9 tower called itself, so on sparse tower layers the filament used by
+  the tower depended on the compiler. The Linux (cloud slicer) build hung forever on
+  any mixed-nozzle tower; the Windows build printed the right geometry but may have
+  misreported the tower's filament use. The upstream rule is restored.
+
 ## v2.7.0 — 2026-11-13
 
 ### Added
