@@ -2118,7 +2118,7 @@ bool WipeTower::layer_is_printed(bool toolchanges_on_layer) const
 {
     if (m_layer_info != m_plan.end() && m_layer_info->combined_away)
         return false;
-    return layer_is_printed(toolchanges_on_layer);
+    return ! m_sparse_layers_skipped || toolchanges_on_layer;
 }
 
 WipeTower::WipeTower(const PrintConfig& config, int plate_idx, Vec3d plate_origin, size_t initial_tool, const float wipe_tower_height, const std::vector<unsigned int>& slice_used_filaments) :
