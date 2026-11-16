@@ -553,7 +553,10 @@ std::string AtnPanel::build_context_json() const
     const PresetBundle& bundle = *wxGetApp().preset_bundle;
 
     json ctx;
-    ctx["app"]            = std::string(SLIC3R_APP_NAME) + " " + std::string(SLIC3R_VERSION);
+    // ATN: report the ATN release (2.7.0), not SLIC3R_VERSION -- that string is the upstream
+    // Orca base (02.06.00.51) and reads the same for every ATN build, so support could not
+    // tell a 2.6.43 install from a 2.7.0 one in a saved slicer-chat case.
+    ctx["app"]            = std::string(SLIC3R_APP_NAME) + " " + std::string(SoftFever_VERSION);
     ctx["printer_preset"]  = bundle.printers.get_edited_preset().name;
     ctx["print_preset"]    = bundle.prints.get_edited_preset().name;
     ctx["filament_presets"] = bundle.filament_presets;

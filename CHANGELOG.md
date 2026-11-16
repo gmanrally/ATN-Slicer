@@ -20,6 +20,12 @@ How this is used:
   any mixed-nozzle tower; the Windows build printed the right geometry but may have
   misreported the tower's filament use. The upstream rule is restored.
 
+### Changed
+- The ATN assistant panel now reports the ATN release (for example 2.7.0) as the app
+  version in the context it sends with each question. It used to send the upstream
+  OrcaSlicer base version, which read the same for every ATN build, so a saved
+  assistant case could not show which release the user was on.
+
 ## v2.7.0 — 2026-11-13
 
 ### Added
