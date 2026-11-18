@@ -13,12 +13,24 @@ How this is used:
 
 ## Unreleased
 
+## v2.7.1 — 2026-11-18
+
 ### Fixed
 - Prime tower filament-used accounting: the layer-is-printed check introduced with the
   Bambu Studio 2.9 tower called itself, so on sparse tower layers the filament used by
   the tower depended on the compiler. The Linux (cloud slicer) build hung forever on
   any mixed-nozzle tower; the Windows build printed the right geometry but may have
   misreported the tower's filament use. The upstream rule is restored.
+- FlashForge Adventurer 5M, 5M Pro and AD5X printer profiles now default the Physical
+  Printer's Host Type to "Flashforge". A new connection used to start on
+  "Octo/Klipper", which these printers do not speak: the Device tab showed a browser
+  error ("refused to connect") instead of the FlashForge status page, and sending a
+  print failed. Physical printers you already saved keep their Host Type.
+- Adding a printer that cannot be loaded now says so. When the printer profiles stored
+  on this computer are damaged, Confirm in "Select/Remove printers" used to close
+  without a word and leave the Printer box empty. The slicer now explains what happened
+  and how to repair the copy (rename the "system" folder in its data directory and add
+  the printer again).
 
 ### Changed
 - The ATN assistant panel now reports the ATN release (for example 2.7.0) as the app

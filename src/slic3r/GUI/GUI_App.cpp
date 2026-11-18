@@ -10057,6 +10057,25 @@ bool GUI_App::run_wizard(RunReason reason, StartPage start_page)
         update_publish_status();
         mainframe->refresh_plugin_tips();
         // BBS: remove SLA related message
+
+        // ATN: the guide closes on Confirm whether or not the chosen printers actually loaded.
+        // A damaged vendor copy under <data_dir>/system leaves the Printer box empty with no
+        // message at all (seen on a FlashForge AD5X). Say what happened and how to repair it.
+        if (start_page != StartPage::SP_FILAMENTS && preset_bundle->printers.only_default_printers()) {
+            bool any_model_enabled = false;
+            for (const auto &vendor : app_config->vendors())
+                if (!vendor.second.empty()) { any_model_enabled = true; break; }
+            if (any_model_enabled) {
+                const wxString system_dir = from_u8((fs::path(data_dir()) / "system").make_preferred().string());
+                const wxString log_dir    = from_u8((fs::path(data_dir()) / "log").make_preferred().string());
+                wxString msg = _L("The printer you selected could not be loaded, so the Printer box is still empty.") + "\n\n" +
+                    format_wxstr(_L("This usually means the copy of the printer profiles stored on this computer is damaged. "
+                                    "Close %1%, rename this folder to \"system_old\":\n%2%\nthen start %1% again and add the printer again."),
+                                 SLIC3R_APP_NAME, system_dir) + "\n\n" +
+                    format_wxstr(_L("If the Printer box is still empty after that, email the newest file in\n%1%\nto info@askthenozzle.com."), log_dir);
+                MessageDialog(mainframe, msg, _L("Printer not added"), wxOK | wxICON_WARNING).ShowModal();
+            }
+        }
     }
 
     return res;
