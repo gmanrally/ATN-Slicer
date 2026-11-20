@@ -13,6 +13,17 @@ How this is used:
 
 ## Unreleased
 
+### Added
+- **Nozzle sizes dialog (H3C, H2C, H2D / X2D).** The in-app selector for mixed nozzle sizes
+  that 2.7.0 left "to come": a **Nozzle sizes** button in the filament bar (shown for Bambu
+  printers with a hotend rack or two extruders) opens a dialog to switch *Mixed nozzle sizes
+  in this project* on, record the nozzle fitted in each slot (diameter and flow type, or an
+  empty slot), and choose which nozzle each filament prints with. Each filament row in the
+  sidebar then shows its nozzle size. A plate in custom grouping gets its per-filament nozzle
+  map from the same choices, so a filament can never be sent to a nozzle of another size.
+  Everything is saved with the project. Please report what you see on the printer: mixed-size
+  prints are verified in slicing only.
+
 ## v2.7.1 — 2026-11-18
 
 ### Fixed

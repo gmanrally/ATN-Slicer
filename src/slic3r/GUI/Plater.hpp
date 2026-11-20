@@ -242,6 +242,9 @@ public:
     void enable_purge_mode_btn(bool enable);
     // Sidebar nozzle-count badge on the extruder cards (multi-nozzle printers only).
     void set_extruder_nozzle_count(int extruder_id, int nozzle_count);
+    // Mixed nozzle sizes (NozzleSizesDialog): the "Nozzle sizes" button and the per-row nozzle labels.
+    void update_nozzle_sizes_button();
+    void refresh_filament_nozzle_labels();
     void enable_nozzle_count_edit(bool enable);
     void update_dynamic_filament_list();
 

@@ -301,6 +301,7 @@
 #include "../Utils/OrcaCloudServiceAgent.hpp"
 #include "StepMeshDialog.hpp"
 #include "FilamentMapDialog.hpp"
+#include "NozzleSizesDialog.hpp"
 #include "CloneDialog.hpp"
 #include "PurgeModeDialog.hpp"
 
@@ -968,6 +969,8 @@ struct Sidebar::priv
     ScalableButton* m_filament_icon = nullptr;
     Button * m_purge_mode_btn = nullptr;
     Button * m_flushing_volume_btn = nullptr;
+    Button * m_nozzle_sizes_btn = nullptr;             // mixed nozzle sizes (NozzleSizesDialog); Bambu racks / two extruders only
+    std::vector<Label*> filament_nozzle_labels;        // one per filament row: "0.2 mm" while mixed nozzle sizes is on
     TextInput* m_search_item = nullptr;
     StaticBox* m_search_bar = nullptr;
     Search::SearchObjectDialog* dia = nullptr;
@@ -3272,6 +3275,7 @@ Sidebar::Sidebar(Plater *parent)
         int exclude_pt = p->m_bpButton_set_filament->GetPosition().x; // maximum fixed item
         if      (p->m_purge_mode_btn->IsShown())        exclude_pt = p->m_purge_mode_btn->GetPosition().x;
         else if (p->m_flushing_volume_btn->IsShown())   exclude_pt = p->m_flushing_volume_btn->GetPosition().x;
+        else if (p->m_nozzle_sizes_btn && p->m_nozzle_sizes_btn->IsShown()) exclude_pt = p->m_nozzle_sizes_btn->GetPosition().x;
         else if (p->m_bpButton_add_filament->IsShown()) exclude_pt = p->m_bpButton_add_filament->GetPosition().x - FromDIP(30); // reserve spacing for delete button
         else if (ams_btn->IsShown())                    exclude_pt = ams_btn->GetPosition().x;
         if (e.GetPosition().x > exclude_pt)
@@ -3343,6 +3347,23 @@ Sidebar::Sidebar(Plater *parent)
 
     bSizer39->Add(p->m_flushing_volume_btn, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(4));
     bSizer39->Hide(p->m_flushing_volume_btn); // ORCA Ensure button is hidden on launch while 1 filament exist
+
+    // ATN: mixed nozzle sizes (Bambu H2C / H3C hotend racks, H2D / X2D): which nozzle sits in each slot and
+    // which one each filament prints with. Shown only for such printers (update_nozzle_sizes_button).
+    p->m_nozzle_sizes_btn = new Button(p->m_panel_filament_title, _L("Nozzle sizes"));
+    p->m_nozzle_sizes_btn->SetStyle(ButtonStyle::Confirm, ButtonType::Compact);
+    p->m_nozzle_sizes_btn->SetToolTip(_L("The nozzle fitted in each slot, and which nozzle each filament prints with"));
+    p->m_nozzle_sizes_btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
+        NozzleSizesDialog dlg(static_cast<wxWindow *>(wxGetApp().mainframe));
+        dlg.ShowModal();
+        if (dlg.applied()) {
+            refresh_filament_nozzle_labels();
+            p->plater->get_view3D_canvas3D()->reload_scene(true);
+            p->plater->update();
+        }
+    });
+    bSizer39->Add(p->m_nozzle_sizes_btn, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(4));
+    bSizer39->Hide(p->m_nozzle_sizes_btn); // shown by update_nozzle_sizes_button() for multi-nozzle Bambu printers
 
     ScalableButton* add_btn = new ScalableButton(p->m_panel_filament_title, wxID_ANY, "add_filament");
     add_btn->SetToolTip(_L("Add one filament"));
@@ -3721,6 +3742,16 @@ void Sidebar::init_filament_combo(PlaterPresetComboBox **combo, const int filame
     combo_and_btn_sizer->Add((*combo)->clr_picker, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(SidebarProps::ElementSpacing()) - FromDIP(2)); // ElementSpacing - 2 (from combo box))
     combo_and_btn_sizer->Add(*combo, 1, wxALL | wxEXPAND, FromDIP(2))->SetMinSize({-1, 30 * wxGetApp().em_unit() / 10}); // ORCA ensure height matches with PlaterPresetComboBox
 
+    // ATN: the nozzle this filament prints with while mixed nozzle sizes is on (NozzleSizesDialog); hidden otherwise.
+    Label *nozzle_lbl = new Label(p->m_panel_filament_content, Label::Body_12, "");
+    nozzle_lbl->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#6B6B6B")));
+    nozzle_lbl->SetToolTip(_L("Nozzle this filament prints with (Nozzle sizes)"));
+    nozzle_lbl->Hide();
+    combo_and_btn_sizer->Add(nozzle_lbl, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(2));
+    if (p->filament_nozzle_labels.size() <= (size_t) filament_idx)
+        p->filament_nozzle_labels.resize((size_t) filament_idx + 1, nullptr);
+    p->filament_nozzle_labels[(size_t) filament_idx] = nozzle_lbl;
+
     /* BBS hide del_btn
     ScalableButton* del_btn = new ScalableButton(p->m_panel_filament_content, wxID_ANY, "delete_filament");
     del_btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent& e){
@@ -3787,6 +3818,11 @@ void Sidebar::remove_unused_filament_combos(const size_t current_extruder_count)
         sizer_filaments->Remove(last / 2);
         (*p->combos_filament[last]).Destroy();
         p->combos_filament.pop_back();
+        if ((size_t) last < p->filament_nozzle_labels.size()) {
+            if (p->filament_nozzle_labels[(size_t) last])
+                p->filament_nozzle_labels[(size_t) last]->Destroy();
+            p->filament_nozzle_labels.resize((size_t) last);
+        }
     }
     // BBS:  filament double columns
     auto sizer_filaments0 = this->p->sizer_filaments->GetItem((size_t)0)->GetSizer();
@@ -3963,6 +3999,7 @@ void Sidebar::update_presets(Preset::Type preset_type)
             p->combos_filament[i]->update();
 
         update_dynamic_filament_list();
+        refresh_filament_nozzle_labels();
         break;
     }
 
@@ -3988,6 +4025,8 @@ void Sidebar::update_presets(Preset::Type preset_type)
     {
         update_all_preset_comboboxes();
         p->show_preset_comboboxes();
+        update_nozzle_sizes_button();
+        refresh_filament_nozzle_labels();
 
         /* update bed shape */
         Tab* printer_tab = wxGetApp().get_tab(Preset::TYPE_PRINTER);
@@ -5539,6 +5578,7 @@ void Sidebar::msw_rescale()
     p->m_bpButton_set_filament->msw_rescale();
     p->m_purge_mode_btn->Rescale();
     p->m_flushing_volume_btn->Rescale();
+    if (p->m_nozzle_sizes_btn) p->m_nozzle_sizes_btn->Rescale();
     set_flushing_volume_warning(is_flush_config_modified()); // ORCA reapply appearance
 
     //BBS
@@ -5625,6 +5665,7 @@ void Sidebar::sys_color_changed()
     p->m_bpButton_set_filament->msw_rescale();
     p->m_purge_mode_btn->Rescale();
     p->m_flushing_volume_btn->Rescale();
+    if (p->m_nozzle_sizes_btn) p->m_nozzle_sizes_btn->Rescale();
     set_flushing_volume_warning(is_flush_config_modified()); // ORCA reapply appearance
 
     // BBS
@@ -6607,7 +6648,55 @@ void Sidebar::show_SEMM_buttons()
             c->edit_btn->SetBitmap_("edit");
     }
 
+    update_nozzle_sizes_button();
+    refresh_filament_nozzle_labels();
     Layout();
+}
+
+// The "Nozzle sizes" button belongs to Bambu printers that can hold more than one nozzle at a time: a hotend
+// rack (any extruder_max_nozzle_count > 1 — H2C, H3C) or two extruders (H2D, X2D).
+void Sidebar::update_nozzle_sizes_button()
+{
+    if (!p || !p->m_nozzle_sizes_btn || !p->m_panel_filament_title)
+        return;
+    PresetBundle &pb   = *wxGetApp().preset_bundle;
+    bool          show = false;
+    if (pb.is_bbl_vendor()) {
+        const DynamicPrintConfig &cfg = pb.printers.get_edited_preset().config;
+        const auto *nd = cfg.option<ConfigOptionFloats>("nozzle_diameter");
+        const auto *mx = cfg.option<ConfigOptionIntsNullable>("extruder_max_nozzle_count");
+        const bool  rack = mx && std::any_of(mx->values.begin(), mx->values.end(),
+                                             [](int v) { return v > 1 && v != ConfigOptionIntsNullable::nil_value(); });
+        show = rack || (nd && nd->values.size() >= 2);
+    }
+    if (p->m_nozzle_sizes_btn->IsShown() != show) {
+        p->m_nozzle_sizes_btn->Show(show);
+        p->m_panel_filament_title->Layout();
+    }
+}
+
+// "0.2 mm" after each filament's combo while mixed nozzle sizes is on; nothing while it is off.
+void Sidebar::refresh_filament_nozzle_labels()
+{
+    if (!p)
+        return;
+    PresetBundle *pb  = wxGetApp().preset_bundle;
+    const bool    on  = pb && multi_nozzle_diameter_mode_enabled(pb->project_config);
+    const auto   *fdm = pb ? pb->project_config.option<ConfigOptionStrings>("filament_diameter_map") : nullptr;
+    bool changed = false;
+    for (size_t i = 0; i < p->filament_nozzle_labels.size(); ++i) {
+        Label *l = p->filament_nozzle_labels[i];
+        if (!l)
+            continue;
+        wxString text;
+        if (on && fdm && i < fdm->values.size() && !fdm->values[i].empty())
+            text = wxString::FromUTF8(fdm->values[i]) + " mm";
+        const bool show = !text.empty();
+        if (l->GetLabel() != text) { l->SetLabel(text); changed = true; }
+        if (l->IsShown() != show) { l->Show(show); changed = true; }
+    }
+    if (changed && p->m_panel_filament_content)
+        p->m_panel_filament_content->Layout();
 }
 
 void Sidebar::enable_purge_mode_btn(bool enable)
