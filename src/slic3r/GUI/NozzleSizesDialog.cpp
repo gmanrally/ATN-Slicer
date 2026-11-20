@@ -281,7 +281,7 @@ void NozzleSizesDialog::build()
 
     // The mode switch.
     auto *mode_row = new wxBoxSizer(wxHORIZONTAL);
-    m_mode_check   = new CheckBox(this);
+    m_mode_check   = new ::CheckBox(this);   // the Widgets/ toggle; Slic3r::GUI has an unrelated CheckBox too
     m_mode_check->SetValue(m_mode);
     m_mode_check->Bind(wxEVT_TOGGLEBUTTON, [this](wxCommandEvent &) { on_mode_toggled(); });
     mode_row->Add(m_mode_check, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
