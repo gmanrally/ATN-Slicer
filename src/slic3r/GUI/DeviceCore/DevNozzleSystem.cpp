@@ -450,12 +450,27 @@ static std::unordered_map<std::string, NozzleType> _str2_nozzle_type = {
 
 static void s_parse_nozzle_type(const std::string& nozzle_type_str, DevNozzle& nozzle)
 {
+    // ATN (from Bambu Studio 2.9.1): a tool position holds a hotend unless its type code says otherwise.
+    // The codes are a family letter + flow letter + material digits ("HS00", "HH01-0.4"): H is a hotend,
+    // anything else (C cutter / pen, L laser, F fan) is not something to slice for.
+    nozzle.m_is_hotend = true;
     if (NozzleTypeStrToEumn.count(nozzle_type_str) != 0)
     {
         nozzle.m_nozzle_type = NozzleTypeStrToEumn[nozzle_type_str];
     }
     else if (nozzle_type_str.length() >= 4)
     {
+        nozzle.m_is_hotend = nozzle_type_str[0] == 'H';
+        if (nozzle.m_is_hotend)
+        {
+            // The diameter rides on the code after a dash; some reports carry it only there.
+            const auto diameter_pos = nozzle_type_str.find('-');
+            if (diameter_pos != std::string::npos && diameter_pos + 1 < nozzle_type_str.size())
+            {
+                const float diameter = DevUtil::string_to_float(nozzle_type_str.substr(diameter_pos + 1));
+                if (diameter > 0.0f) { nozzle.m_diameter = std::round(diameter * 10) / 10; }
+            }
+        }
         const std::string& flow_type_str = nozzle_type_str.substr(1, 1);
         if (_str2_nozzle_flow_type.count(flow_type_str) != 0)
         {
@@ -537,9 +552,12 @@ void DevNozzleSystemParser::ParseV2_0(const json& device_json, DevNozzleSystem* 
     if (device_json.contains("nozzle"))
     {
         const json& nozzle_json = device_json["nozzle"];
+        // One bit per tool id (rack tools at 0x10 + position): clear means the position is vacant.
+        std::optional<int> exist_bits;
         if (nozzle_json.contains("exist"))
         {
             system->m_extder_exist = DevUtil::get_flag_bits(nozzle_json["exist"].get<int>(), 0, 16);
+            exist_bits = nozzle_json["exist"].get<int>();
         }
 
         if (nozzle_json.contains("state"))
@@ -578,7 +596,23 @@ void DevNozzleSystemParser::ParseV2_0(const json& device_json, DevNozzleSystem* 
 
             const auto& njon = it.value();
             nozzle_obj.m_nozzle_id = DevUtil::get_hex_bits(njon["id"].get<int>(), 0);
-            nozzle_obj.m_diameter = njon["diameter"].get<float>();
+            // ATN (from Bambu Studio 2.9.1): a tool position that is not a hotend has no diameter, and some
+            // firmware sends it as a string. get<float>() on either throws and would drop the whole status
+            // message, so read it tolerantly: 0 means "not reported".
+            nozzle_obj.m_diameter = 0.0f;
+            if (njon.contains("diameter"))
+            {
+                if (njon["diameter"].is_number()) { nozzle_obj.m_diameter = njon["diameter"].get<float>(); }
+                else if (njon["diameter"].is_string()) { nozzle_obj.m_diameter = DevUtil::string_to_float(njon["diameter"].get<std::string>()); }
+            }
+            if (njon.contains("addr_id") && njon["addr_id"].is_number_integer())
+            {
+                nozzle_obj.m_addr_id = njon["addr_id"].get<int>();
+            }
+            if (exist_bits.has_value())
+            {
+                nozzle_obj.m_is_exist = DevUtil::get_flag_bits(exist_bits.value(), njon["id"].get<int>()) != 0;
+            }
             s_parse_nozzle_type(njon["type"].get<std::string>(), nozzle_obj);
             if (njon.contains("stat"))/*maybe not contains*/
             {

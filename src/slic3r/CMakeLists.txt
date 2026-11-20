@@ -291,6 +291,7 @@ set(SLIC3R_GUI_SOURCES
     GUI/FilamentMapPanel.hpp
     GUI/FilamentMapDialog.cpp
     GUI/FilamentMapDialog.hpp
+    GUI/MachineNozzleSlots.hpp
     GUI/NozzleSizesDialog.cpp
     GUI/NozzleSizesDialog.hpp
     GUI/IconManager.cpp

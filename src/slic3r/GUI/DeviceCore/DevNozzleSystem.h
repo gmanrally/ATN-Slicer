@@ -39,6 +39,10 @@ namespace Slic3r
        NozzleFlowType  m_nozzle_flow = NozzleFlowType::S_FLOW;// 0-common 1-high flow
        NozzleType      m_nozzle_type = NozzleType::ntUndefine;// 0-stainless_steel 1-hardened_steel 5-tungsten_carbide
        float           m_diameter = 0.0f;// unknown until reported by the printer
+       // ATN (from Bambu Studio 2.9.1): what a rack printer adds to each tool of its nozzle report.
+       std::optional<int> m_addr_id;        // the slot this tool belongs to, on printers that address every tool position (H3C)
+       bool            m_is_exist = true;   // false: the printer reports this position vacant (its "exist" bit is clear)
+       bool            m_is_hotend = true;  // false: the type code names a cutter, pen, laser or fan module
 
    public:
        // flow/volume conversions (Standard / High Flow / TPU High Flow / E3D High Flow)
@@ -52,6 +56,9 @@ namespace Slic3r
 
    public:
        bool     IsEmpty() const { return m_nozzle_id < 0; }
+       std::optional<int> GetAddrId() const { return m_addr_id; }
+       bool     IsExist() const { return m_is_exist && m_nozzle_id > -1; }
+       bool     IsHotend() const { return m_is_hotend; }
 
        void     SetRack(const std::weak_ptr<DevNozzleRack>& rack) { m_nozzle_rack = rack; }
 

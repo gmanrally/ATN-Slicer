@@ -23,6 +23,13 @@ How this is used:
   map from the same choices, so a filament can never be sent to a nozzle of another size.
   Everything is saved with the project. Please report what you see on the printer: mixed-size
   prints are verified in slicing only.
+- **Read from printer (Nozzle sizes dialog).** One press fills the slot list from the nozzles
+  the connected printer reports: size and flow type per slot, empty slots left empty. It
+  switches mixed nozzle sizes on when the printer carries more than one size, and says so.
+  A tool the printer has not identified as a usable nozzle (an unread hotend, a cutter or a
+  pen) is left out and counted in the status line. Nothing is written until you press Apply.
+  The device layer now reads the slot address, the present / absent flag and the tool kind a
+  rack printer sends for each tool position (as Bambu Studio 2.9.1 does).
 
 ## v2.7.1 — 2026-11-18
 

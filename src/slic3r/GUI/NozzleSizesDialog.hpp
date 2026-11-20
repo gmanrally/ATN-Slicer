@@ -13,6 +13,7 @@ class wxBoxSizer;
 class wxFlexGridSizer;
 class wxPanel;
 class wxWindow;
+class Button;
 class CheckBox;
 class ComboBox;
 class Label;
@@ -27,6 +28,7 @@ namespace Slic3r { namespace GUI {
 // filament_volume_map. A plate in a custom grouping also gets its per-filament nozzle map from the same
 // picks (filament_nozzle_map / filament_map, mode "Nozzle Manual"), so it can never point a filament at a
 // nozzle of another diameter. Orca-native replacement for Bambu Studio's per-row FilamentNozzlePopup.
+// "Read from printer" fills the slots from the nozzle report of the connected printer.
 class NozzleSizesDialog : public DPIDialog
 {
 public:
@@ -66,6 +68,8 @@ private:
     void on_slot_flow(size_t e, size_t k);
     void on_mode_toggled();
     void rebuild_filament_rows();
+    void read_from_printer();
+    void set_read_status(const wxString &text, bool warning);
 
     std::vector<std::string>      installed_diameters() const;
     std::vector<NozzleVolumeType> installed_volumes_for(const std::string &diameter) const;
@@ -91,6 +95,8 @@ private:
     // --- widgets ---
     CheckBox                          *m_mode_check = nullptr;
     Label                             *m_hint       = nullptr;
+    Button                            *m_read_btn    = nullptr;
+    Label                             *m_read_status = nullptr;
     std::vector<std::vector<SlotRow>>  m_slot_rows;
     wxPanel                           *m_fil_panel  = nullptr;
     wxFlexGridSizer                   *m_fil_sizer  = nullptr;

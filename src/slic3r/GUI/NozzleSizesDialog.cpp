@@ -1,13 +1,20 @@
 #include "NozzleSizesDialog.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <set>
 
 #include <wx/panel.h>
 #include <wx/sizer.h>
 
+#include "DeviceCore/DevExtruderSystem.h"
+#include "DeviceCore/DevManager.h"
+#include "DeviceCore/DevNozzleRack.h"
+#include "DeviceCore/DevNozzleSystem.h"
+#include "DeviceManager.hpp"
 #include "GUI_App.hpp"
 #include "I18N.hpp"
+#include "MachineNozzleSlots.hpp"
 #include "MsgDialog.hpp"
 #include "PartPlate.hpp"
 #include "Plater.hpp"
@@ -286,7 +293,13 @@ void NozzleSizesDialog::build()
     m_mode_check->Bind(wxEVT_TOGGLEBUTTON, [this](wxCommandEvent &) { on_mode_toggled(); });
     mode_row->Add(m_mode_check, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
     mode_row->Add(new Label(this, Label::Body_14, _L("Mixed nozzle sizes in this project")), 0, wxALIGN_CENTER_VERTICAL);
-    body->Add(mode_row, 0, wxBOTTOM, FromDIP(4));
+    mode_row->AddStretchSpacer(1);
+    m_read_btn = new Button(this, _L("Read from printer"));
+    m_read_btn->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
+    m_read_btn->SetToolTip(_L("Fill the list below with the nozzles the connected printer reports"));
+    m_read_btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { read_from_printer(); });
+    mode_row->Add(m_read_btn, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(16));
+    body->Add(mode_row, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
     m_hint = new Label(this, Label::Body_12,
                        _L("Each filament is assigned the nozzle it prints with; layer heights, line widths, walls and "
                           "retraction follow that nozzle. Record the nozzles fitted below first, then pick one per "
@@ -294,6 +307,10 @@ void NozzleSizesDialog::build()
     m_hint->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#6B6B6B")));
     m_hint->Wrap(FromDIP(540));
     body->Add(m_hint, 0, wxBOTTOM, FromDIP(12));
+    // What the last "Read from printer" did; hidden until the button is used.
+    m_read_status = new Label(this, Label::Body_12, wxString(""));
+    body->Add(m_read_status, 0, wxBOTTOM, FromDIP(12));
+    m_read_status->Hide();
 
     // What is fitted, extruder by extruder.
     const size_t n_ext = m_slots.size();
@@ -507,6 +524,161 @@ void NozzleSizesDialog::rebuild_filament_rows()
     m_fil_panel->Layout();
     Layout();
     Fit();
+}
+
+// ------------------------------------------------------------------------------------------------ read from printer
+
+void NozzleSizesDialog::set_read_status(const wxString &text, bool warning)
+{
+    m_read_status->SetLabel(text);
+    m_read_status->SetForegroundColour(StateColor::darkModeColorFor(wxColour(warning ? "#C2540A" : "#6B6B6B")));
+    m_read_status->Wrap(FromDIP(540));
+    m_read_status->Show();
+    Layout();
+    Fit();
+}
+
+// Fill the slots from the nozzle report of the connected printer. Nothing is written to the project here:
+// the rows change, the user checks them and Apply writes as usual.
+void NozzleSizesDialog::read_from_printer()
+{
+    DeviceManager *dev = wxGetApp().getDeviceManager();
+    MachineObject *obj = dev ? dev->get_selected_machine() : nullptr;
+    if (!obj || !obj->is_connected()) {
+        set_read_status(_L("No printer is connected. Open the Device tab, connect to the printer, then press Read from "
+                           "printer again."), true);
+        return;
+    }
+    PresetBundle         &pb        = *wxGetApp().preset_bundle;
+    const wxString        name      = wxString::FromUTF8(obj->get_dev_name());
+    const DevNozzleSystem *sys      = obj->GetNozzleSystem();
+    const DevExtderSystem *exts     = obj->GetExtderSystem();
+    const int             total_ext = exts ? exts->GetTotalExtderCount() : 1;
+    if (pb.printers.get_edited_preset().get_printer_type(&pb) != obj->get_show_printer_type() || total_ext != int(m_slots.size())) {
+        set_read_status(wxString::Format(_L("%s is not the printer model selected in this project, so its nozzles were not "
+                                            "read. Select its printer preset first."), name), true);
+        return;
+    }
+    if (!sys || (sys->GetExtNozzles().empty() && sys->GetRackNozzles().empty())) {
+        set_read_status(wxString::Format(_L("%s has not reported its nozzles yet. Wait a few seconds and press Read from "
+                                            "printer again."), name), true);
+        return;
+    }
+
+    // The printer's tools, reduced to what the placement needs. Health is only judged on rack printers, as
+    // Bambu Studio does: a single fixed nozzle reports no such state.
+    const auto rack_dev = sys->GetNozzleRack();
+    const bool has_rack = rack_dev && rack_dev->IsSupported();
+    auto reported = [&](const DevNozzle &n) {
+        MachineNozzleSlots::Reported r;
+        r.on_rack  = n.IsOnRack();
+        r.id       = n.GetNozzleId();
+        r.addr_id  = n.GetAddrId().value_or(-1);
+        // Two extruders: the rack and the main nozzle are the right one (index 1), the deputy nozzle the left.
+        r.extruder = total_ext < 2 ? 0 : ((r.on_rack || r.id == MAIN_EXTRUDER_ID) ? 1 : 0);
+        r.exists   = n.IsExist();
+        r.usable   = n.IsHotend() && (!has_rack || (n.IsNormal() && !n.IsUnknown()));
+        // format_diameter_to_str snaps to the nearest size, so only a value that IS one of them may pass.
+        const double d = n.GetNozzleDiameter();
+        if (d > 0.05) {
+            const std::string s = format_diameter_to_str(d);
+            if (std::abs(diameter_value(s) - d) < 0.05)
+                r.diameter = s;
+        }
+        r.volume = int(DevNozzle::ToNozzleVolumeType(n.GetNozzleFlowType()));
+        return r;
+    };
+    std::vector<MachineNozzleSlots::Reported> tools;
+    for (const auto &item : sys->GetRackNozzles())
+        tools.push_back(reported(item.second));
+    for (const auto &item : sys->GetExtNozzles())
+        tools.push_back(reported(item.second));
+
+    using MachineNozzleSlots::SlotRead;
+    auto next = m_slots;
+    int  read = 0, emptied = 0, unidentified = 0, reflowed = 0;
+    for (size_t e = 0; e < next.size(); ++e) {
+        const auto found   = MachineNozzleSlots::place(tools, int(e), int(next[e].size()));
+        const bool is_rack = next[e].size() > 1;
+        for (size_t k = 0; k < found.size(); ++k) {
+            Slot      &slot   = next[e][k];
+            const bool nozzle = found[k].state == SlotRead::Nozzle &&
+                                std::find(m_printer_diameters.begin(), m_printer_diameters.end(), found[k].diameter) != m_printer_diameters.end();
+            if (nozzle) {
+                slot.installed = true;
+                slot.diameter  = found[k].diameter;
+                slot.volume    = NozzleVolumeType(found[k].volume);
+                // A flow type this printer preset has no variant for cannot be sliced as such: the row falls
+                // back to one it has (fill_slot_flow), and the status line says so.
+                if (std::find(m_offered[e].begin(), m_offered[e].end(), slot.volume) == m_offered[e].end() ||
+                    !nozzle_variant_exists(slot.diameter, slot.volume))
+                    ++reflowed;
+                ++read;
+                continue;
+            }
+            if (found[k].state != SlotRead::Vacant)
+                ++unidentified;
+            if (is_rack) { // a lone nozzle cannot be empty: it keeps what the project says
+                slot.installed = false;
+                ++emptied;
+            }
+        }
+    }
+    if (read == 0) {
+        set_read_status(wxString::Format(_L("%s did not report a nozzle that can be used here, so nothing was changed. If it "
+                                            "is still reading its hotends, press Read from printer again when it has "
+                                            "finished."), name), true);
+        return;
+    }
+
+    m_slots = next;
+    for (size_t e = 0; e < m_slots.size(); ++e)
+        for (size_t k = 0; k < m_slots[e].size() && k < m_slot_rows[e].size(); ++k) {
+            fill_slot_diameter(e, k, m_slot_rows[e][k]);
+            fill_slot_flow(e, k, m_slot_rows[e][k]);
+        }
+    // More than one size on the printer is what the mode is for: off, Apply would write every slot at the
+    // preset's diameter and what was just read would be lost.
+    bool switched_on = false;
+    if (!m_mode && installed_diameters().size() > 1) {
+        m_mode_check->SetValue(true);
+        switched_on = true;
+    }
+    on_mode_toggled(); // also re-seats every filament on a nozzle that is fitted now
+
+    wxString msg = wxString::Format(_L_PLURAL("Read %d nozzle from %s.", "Read %d nozzles from %s.", read), read, name);
+    if (emptied > 0)
+        msg += " " + wxString::Format(_L_PLURAL("%d slot is empty.", "%d slots are empty.", emptied), emptied);
+    if (unidentified > 0)
+        msg += " " + wxString::Format(_L_PLURAL("%d tool is not one the printer has identified as a usable nozzle and was left out.",
+                                                "%d tools are not ones the printer has identified as usable nozzles and were left out.",
+                                                unidentified), unidentified);
+    if (reflowed > 0)
+        msg += " " + wxString::Format(_L_PLURAL("%d nozzle has a flow type this printer preset has no profile for; check its row.",
+                                                "%d nozzles have a flow type this printer preset has no profile for; check their rows.",
+                                                reflowed), reflowed);
+    if (sys->IsRefreshing())
+        msg += " " + _L("The printer is still reading its hotends, so this may be incomplete.");
+    if (switched_on)
+        msg += " " + _L("The printer carries more than one nozzle size, so mixed nozzle sizes was switched on.");
+    bool warn = unidentified > 0 || reflowed > 0 || sys->IsRefreshing();
+    if (!m_mode) {
+        // One size throughout, but not the size of the selected printer preset.
+        for (size_t e = 0; e < m_slots.size(); ++e) {
+            const auto it = std::find_if(m_slots[e].begin(), m_slots[e].end(),
+                                         [&](const Slot &s) { return s.installed && s.diameter != m_extruder_default_diameter[e]; });
+            if (it == m_slots[e].end())
+                continue;
+            msg += " " + wxString::Format(_L("The nozzles are %s mm but the selected printer preset is the %s mm one: select the "
+                                             "%s mm printer preset to slice for them."),
+                                          wxString::FromUTF8(it->diameter), wxString::FromUTF8(m_extruder_default_diameter[e]),
+                                          wxString::FromUTF8(it->diameter));
+            warn = true;
+            break;
+        }
+    }
+    msg += " " + _L("Check the list, then press Apply.");
+    set_read_status(msg, warn);
 }
 
 // ------------------------------------------------------------------------------------------------ queries
