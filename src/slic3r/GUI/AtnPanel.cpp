@@ -822,7 +822,7 @@ void AtnPanel::handle_set_setting(const std::string& key, const std::string& val
             refuse(slot == AtnApply::kNotOnPlate && sent.size() == slots.size()
                        ? "the filament open in Filament settings (" + open + ") is not one of the plate's filaments, so it is not clear which figure is for it"
                        : "the value lists " + std::to_string(sent.size()) + " figures but the plate has " + std::to_string(slots.size()) +
-                             " filament(s), so it is not clear which figure is for " + open);
+                             (slots.size() == 1 ? " filament" : " filaments") + ", so it is not clear which figure is for " + open);
             return;
         }
         if (pick != AtnApply::kWholeList) {
@@ -863,14 +863,27 @@ void AtnPanel::handle_set_setting(const std::string& key, const std::string& val
             filament["slot"] = slot + 1;
     }
 
-    const std::string before = cfg->opt_serialize(key);
+    // What the setting holds, as the user sees it. A filament keeps one figure per nozzle variant
+    // (six on the generic profiles), all the same unless set apart by hand, and the Filament tab
+    // shows one; six copies of a number in "changed 100,100,... -> 44,44,..." read as six filaments.
+    auto shown = [cfg, &key, type]() -> std::string {
+        const ConfigOption* opt = cfg->option(key);
+        if (type == Preset::TYPE_FILAMENT && opt != nullptr && !opt->is_scalar()) {
+            const std::vector<std::string> each = static_cast<const ConfigOptionVectorBase*>(opt)->vserialize();
+            if (!each.empty() && std::all_of(each.begin(), each.end(), [&each](const std::string& one) { return one == each.front(); }))
+                return each.front();
+        }
+        return cfg->opt_serialize(key);
+    };
+    const std::string held_before = cfg->opt_serialize(key);
+    const std::string before      = shown();
 
     // Apply through the Tab so the field updates, the preset is marked
     // modified, and slicing state is invalidated - same as a manual edit.
     wxGetApp().get_tab(type)->load_config(delta);
 
-    const std::string after   = cfg->opt_serialize(key);
-    const bool        changed = (before != after);
+    const std::string after   = shown();
+    const bool        changed = (held_before != cfg->opt_serialize(key));
 
     // Only pull the view to the option when we actually changed it, so applying
     // a batch of recommendations where most are already correct doesn't yank the
