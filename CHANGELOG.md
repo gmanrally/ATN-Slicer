@@ -39,6 +39,30 @@ How this is used:
   The device layer now reads the slot address, the present / absent flag and the tool kind a
   rack printer sends for each tool position (as Bambu Studio 2.9.1 does).
 
+### Fixed
+- **Apply no longer falls back to a setting's default.** When the assistant named a choice the
+  slicer did not know ("outer_brim" for Brim type, where the choice is "Outer brim only"),
+  one-click Apply quietly set the setting to its default and reported it as already set. Apply
+  now works out which choice was meant and applies that, or says the value is not one of the
+  choices and changes nothing.
+- **Apply puts a per-filament value on the right filament.** A recommendation with one figure
+  per filament (Part cooling fan minimum "80,60") was loaded whole into whichever filament was
+  open in Filament settings, which then used the first figure. The open filament now takes its
+  own figure, and the assistant says which of the plate's other filaments still differ, so you
+  can open each and apply again.
+- **Changing nozzle size keeps the printer connection.** The nozzle size box switched to the
+  stock profile for that size, which has no connection, so the printer had to be connected
+  again. It now selects your own profile for that size when one holds a connection, and
+  otherwise carries the connection in use over to the new profile (as an unsaved change, which
+  you can save).
+- **Heat check on printers that write their own layer comment (bundled ATN Engine 0.2.10).**
+  FlashForge, Creality K1, Prusa, Anycubic and other profiles add a comment at each layer
+  change, and every layer was counted twice: over-heat warnings on parts that were fine, a
+  bed-lift check that could never fire, and Optimise slowing the wrong layers. Pre-flight was
+  corrected on the website on 2026-11-21; this update corrects the FEA tab and Optimise, which
+  run on your PC. The heat check also no longer offers a Min layer time or Min print speed
+  that the slice already meets.
+
 ## v2.7.1 — 2026-11-18
 
 ### Fixed

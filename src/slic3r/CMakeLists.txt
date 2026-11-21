@@ -596,6 +596,7 @@ set(SLIC3R_GUI_SOURCES
     GUI/WebUserLoginDialog.hpp
     GUI/WebViewDialog.cpp
     GUI/WebViewDialog.hpp
+    GUI/AtnApplyRules.hpp
     GUI/AtnNotify.hpp
     GUI/AtnPanel.cpp
     GUI/AtnPanel.hpp

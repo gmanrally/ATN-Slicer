@@ -1,4 +1,5 @@
 #include "AtnPanel.hpp"
+#include "AtnApplyRules.hpp"
 #include "AtnNotify.hpp"
 
 #include "GUI.hpp"
@@ -34,6 +35,7 @@
 #include <cctype>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <thread>
 #include <wx/base64.h>
 #include <wx/sizer.h>
@@ -591,8 +593,12 @@ std::string AtnPanel::build_context_json() const
     ctx["app"]            = std::string(SLIC3R_APP_NAME) + " " + std::string(SoftFever_VERSION);
     // What this build reports to the page beyond the baseline, so the page can word itself for the
     // slicer it is talking to instead of guessing from the version (betas share a version number).
-    //   sent_to_printer: atn_sent_to_printer fires when a job reaches a printer directly.
-    ctx["features"]       = json::array({ "sent_to_printer" });
+    //   sent_to_printer:    atn_sent_to_printer fires when a job reaches a printer directly.
+    //   apply_per_filament: Apply gives the filament open in the Filament tab its OWN figure of a
+    //                       per-filament list and reports the plate's other filaments.
+    //   apply_choices:      Apply works out which choice a mis-named value means, and refuses
+    //                       instead of falling back to the setting's default.
+    ctx["features"]       = json::array({ "sent_to_printer", "apply_per_filament", "apply_choices" });
     ctx["printer_preset"]  = bundle.printers.get_edited_preset().name;
     ctx["print_preset"]    = bundle.prints.get_edited_preset().name;
     ctx["filament_presets"] = bundle.filament_presets;
@@ -749,26 +755,112 @@ void AtnPanel::handle_set_setting(const std::string& key, const std::string& val
     json reply;
     reply["command"]     = "atn_set_setting_result";
     reply["data"]["key"] = key;
+    auto refuse = [this, &reply](const std::string& message) {
+        reply["data"]["ok"]      = false;
+        reply["data"]["message"] = message;
+        send_to_page(reply.dump());
+    };
 
     const PresetBundle& bundle = *wxGetApp().preset_bundle;
     Preset::Type type;
     const DynamicPrintConfig* cfg = config_for_key(bundle, key, type);
     if (cfg == nullptr) {
-        reply["data"]["ok"]      = false;
-        reply["data"]["message"] = "unknown setting: " + key;
-        send_to_page(reply.dump());
+        refuse("unknown setting: " + key);
         return;
     }
 
     DynamicPrintConfig delta;
-    ConfigSubstitutionContext ctx(ForwardCompatibilitySubstitutionRule::Enable);
     try {
+        ConfigSubstitutionContext ctx(ForwardCompatibilitySubstitutionRule::Enable);
         delta.set_deserialize(key, value, ctx);
+        // A value a choice setting does not know is swapped for the setting's DEFAULT under this
+        // rule (it exists so a preset from a newer version still loads). For a one-click Apply that
+        // is a wrong answer given silently: "force outer brim", sent as outer_brim, set Auto. So
+        // work out which choice was meant, and refuse when that cannot be told.
+        const ConfigOptionDef* def = print_config_def.get(key);
+        if (!ctx.substitutions.empty() && def != nullptr && (def->type == coEnum || def->type == coEnums)) {
+            const std::string meant = def->type == coEnum ? AtnApply::resolve_choice(def->enum_values, def->enum_labels, value)
+                                                          : std::string();
+            if (meant.empty()) {
+                std::string choices;
+                for (const std::string& choice : def->enum_values)
+                    choices += (choices.empty() ? "" : ", ") + choice;
+                refuse("\"" + value + "\" is not one of this setting's choices (" + choices + ")");
+                return;
+            }
+            ConfigSubstitutionContext strict(ForwardCompatibilitySubstitutionRule::Disable);
+            delta.set_deserialize(key, meant, strict);
+        }
     } catch (const std::exception& e) {
-        reply["data"]["ok"]      = false;
-        reply["data"]["message"] = std::string("invalid value: ") + e.what();
-        send_to_page(reply.dump());
+        refuse(std::string("invalid value: ") + e.what());
         return;
+    }
+
+    // A filament setting is kept per filament. Each filament on the plate has its own preset and
+    // only the one open in the Filament tab can be edited, while the assistant sees, and sends, one
+    // figure per plate filament. So the open filament takes ITS figure; loading the whole list into
+    // it made it use the first one (filament 2 got the value meant for filament 1).
+    json filament;                       // the filament the value went to
+    json other_filaments = json::array();   // plate filaments left at something else
+    const ConfigOption* own_opt = cfg->option(key);
+    const ConfigOption* new_opt = delta.option(key);
+    if (type == Preset::TYPE_FILAMENT && own_opt != nullptr && new_opt != nullptr && !own_opt->is_scalar() && !new_opt->is_scalar()) {
+        const auto* own_vec = static_cast<const ConfigOptionVectorBase*>(own_opt);
+        const auto* new_vec = static_cast<const ConfigOptionVectorBase*>(new_opt);
+        const std::vector<std::string>  sent  = new_vec->vserialize();
+        const std::vector<std::string>& slots = bundle.filament_presets;
+        const std::string               open  = bundle.filaments.get_edited_preset().name;
+        std::size_t slot = AtnApply::kNotOnPlate;
+        for (std::size_t i = 0; i < slots.size(); ++i)
+            if (slots[i] == open) {
+                slot = i;
+                break;
+            }
+        const bool all_same = std::all_of(sent.begin(), sent.end(), [&sent](const std::string& one) { return one == sent.front(); });
+        const std::size_t pick = AtnApply::figure_for_open_filament(sent.size(), slots.size(), own_vec->size(), slot, all_same);
+        if (pick == AtnApply::kNoFit) {
+            refuse(slot == AtnApply::kNotOnPlate && sent.size() == slots.size()
+                       ? "the filament open in Filament settings (" + open + ") is not one of the plate's filaments, so it is not clear which figure is for it"
+                       : "the value lists " + std::to_string(sent.size()) + " figures but the plate has " + std::to_string(slots.size()) +
+                             " filament(s), so it is not clear which figure is for " + open);
+            return;
+        }
+        if (pick != AtnApply::kWholeList) {
+            // Every figure the open filament keeps (one, or one per nozzle variant) takes the picked value.
+            const std::size_t count = std::max<std::size_t>(own_vec->size(), 1);
+            std::unique_ptr<ConfigOption> narrowed(own_vec->size() > 0 ? own_opt->clone() : new_opt->clone());
+            auto* vec = static_cast<ConfigOptionVectorBase*>(narrowed.get());
+            for (std::size_t i = 0; i < count; ++i)
+                vec->set_at(new_opt, i, pick);
+            vec->resize(count);
+            delta.set_key_value(key, narrowed.release());
+
+            // What the plate's other filaments hold, where it is not what was sent for them: the
+            // page tells the user which ones to open and apply to as well.
+            if (slots.size() > 1 && (sent.size() == 1 || sent.size() == slots.size()))
+                for (std::size_t j = 0; j < slots.size(); ++j) {
+                    if (slots[j] == open)
+                        continue;
+                    const Preset*       other = bundle.filaments.find_preset(slots[j], false);
+                    const ConfigOption* held  = other != nullptr ? other->config.option(key) : nullptr;
+                    if (held == nullptr || held->is_scalar())
+                        continue;
+                    const std::vector<std::string> has  = static_cast<const ConfigOptionVectorBase*>(held)->vserialize();
+                    const std::string&             want = sent.size() == 1 ? sent.front() : sent[j];
+                    if (has.empty() || has.front() == want)
+                        continue;
+                    json one;
+                    one["slot"]    = j + 1;
+                    one["name"]    = slots[j];
+                    one["value"]   = want;
+                    one["current"] = has.front();
+                    other_filaments.push_back(one);
+                }
+        }
+        filament["name"] = open;
+        filament["of"]   = slots.size();
+        if (slot != AtnApply::kNotOnPlate)
+            filament["slot"] = slot + 1;
     }
 
     const std::string before = cfg->opt_serialize(key);
@@ -792,6 +884,10 @@ void AtnPanel::handle_set_setting(const std::string& key, const std::string& val
     reply["data"]["changed"]  = changed;
     reply["data"]["value"]    = after;
     reply["data"]["previous"] = before;
+    if (!filament.is_null())
+        reply["data"]["filament"] = filament;
+    if (!other_filaments.empty())
+        reply["data"]["other_filaments"] = other_filaments;
     send_to_page(reply.dump());
 }
 

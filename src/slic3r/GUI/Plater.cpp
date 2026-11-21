@@ -1881,6 +1881,48 @@ void ExtruderGroup::SetTitle(const wxString& title)
         hover_label->SetTitle(title);
 }
 
+// ATN: the options that say how to reach the physical printer (the Physical Printer dialog edits
+// them). They live in the printer preset, and every nozzle size is a preset of its own.
+static const std::vector<std::string>& atn_connection_options()
+{
+    static const std::vector<std::string> keys = {
+        "host_type", "bbl_use_printhost", "print_host", "print_host_webui", "printhost_apikey", "flashforge_serial_number",
+        "printhost_cafile", "printhost_port", "printhost_authorization_type", "printhost_user", "printhost_password",
+        "printhost_ssl_ignore_revoke"
+    };
+    return keys;
+}
+
+static bool atn_has_connection(const DynamicPrintConfig& config)
+{
+    const auto* host = config.option<ConfigOptionString>("print_host");
+    return host != nullptr && !host->value.empty();
+}
+
+// A preset of the user's own for the same printer model and nozzle as `stock` that already holds
+// the connection to the printer at `host` (what the Physical Printer dialog saves as
+// "<name> - Copy"), one made from `stock` first. nullptr when there is none. The host has to
+// match: a second printer of the same model has presets of its own, and those are not this one.
+static Preset* atn_connected_sibling(PresetBundle& bundle, const Preset& stock, const std::string& host)
+{
+    const std::string model   = stock.config.opt_string("printer_model");
+    const std::string variant = stock.config.opt_string("printer_variant");
+    std::string       best;
+    for (const Preset& preset : bundle.printers.get_presets()) {
+        if (preset.is_system || preset.is_default || preset.name == stock.name || !atn_has_connection(preset.config))
+            continue;
+        if (preset.config.opt_string("printer_model") != model || preset.config.opt_string("printer_variant") != variant)
+            continue;
+        if (preset.config.opt_string("print_host") != host)
+            continue;
+        if (preset.inherits() == stock.name)
+            return bundle.printers.find_preset(preset.name, false);
+        if (best.empty())
+            best = preset.name;
+    }
+    return best.empty() ? nullptr : bundle.printers.find_preset(best, false);
+}
+
 bool Sidebar::priv::switch_diameter(bool single)
 {
     wxString diameter;
@@ -1944,8 +1986,37 @@ bool Sidebar::priv::switch_diameter_to(const wxString &diameter)
         dlg.ShowModal();
         return false;
     }
+    // ATN: keep the connection to the physical printer across the switch. The stock preset this
+    // lands on has none, so changing nozzle size meant connecting the printer again (customer
+    // report, 2026-11-20). Only when the preset being left has a connection and the one arrived at
+    // has none, so two printers of one model with their own connections are left alone:
+    //  1. a preset of the user's own for that size which already holds the connection to this same
+    //     printer is what they mean, not the stock one;
+    //  2. failing that, the connection in use comes along as an unsaved change on the new preset.
+    PresetBundle& bundle         = *wxGetApp().preset_bundle;
+    const bool    had_connection = atn_has_connection(printer_preset.config);
+    if (had_connection && !atn_has_connection(preset->config))
+        if (Preset* own = atn_connected_sibling(bundle, *preset, printer_preset.config.opt_string("print_host")))
+            preset = own;
+    DynamicPrintConfig carry;   // copied now: selecting replaces the edited preset `printer_preset` refers to
+    if (had_connection && !atn_has_connection(preset->config))
+        for (const std::string& key : atn_connection_options())
+            if (const ConfigOption* opt = printer_preset.config.option(key))
+                carry.set_key_value(key, opt->clone());
+    const std::string target = preset->name;
+
     preset->is_visible = true; // force visible
-    return wxGetApp().get_tab(Preset::TYPE_PRINTER)->select_preset(preset->name);
+    Tab* printer_tab = wxGetApp().get_tab(Preset::TYPE_PRINTER);
+    if (!printer_tab->select_preset(target))
+        return false;
+    if (!carry.empty()) {
+        printer_tab->load_config(carry);
+        // The Print / Send button and the Device tab are set from the host when a preset is
+        // selected, which was before the connection arrived.
+        wxGetApp().sidebar().update_all_preset_comboboxes();
+        BOOST_LOG_TRIVIAL(info) << "atn: nozzle size switch carried the printer connection over to " << target;
+    }
+    return true;
 }
 
 static bool is_skip_high_flow_printer(const std::string& printer)
