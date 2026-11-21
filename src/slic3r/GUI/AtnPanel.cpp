@@ -1,4 +1,5 @@
 #include "AtnPanel.hpp"
+#include "AtnNotify.hpp"
 
 #include "GUI.hpp"
 #include "GUI_App.hpp"
@@ -31,11 +32,13 @@
 #include <unordered_map>
 #include <algorithm>
 #include <cctype>
+#include <functional>
 #include <limits>
 #include <thread>
 #include <wx/base64.h>
 #include <wx/sizer.h>
 #include <wx/utils.h>
+#include <wx/weakref.h>
 #include <wx/webview.h>
 #include <wx/stdpaths.h>
 #include <wx/filename.h>
@@ -75,6 +78,24 @@ static void atn_ensure_engine()
     BOOST_LOG_TRIVIAL(info) << "AtnPanel: launched bundled ATN Engine sidecar";
 }
 
+// Posts a message to the page of the assistant panel and says whether there was a panel to take
+// it. Set by the panel's constructor; it holds the panel weakly, so it simply stops delivering once
+// the panel is gone. It is how the notify functions declared in AtnNotify.hpp reach the page: the
+// code that sends a job holds no handle on the panel.
+static std::function<bool(const std::string&)> s_post_to_page;
+
+void atn_notify_sent_to_printer(const std::string& route)
+{
+    // ATN: a job reached a printer without the farm -> tell the page so the learning diary records
+    // it, the same as a farm dispatch (on_sent_to_farm). The page asks for the context itself.
+    json msg;
+    msg["command"]       = "atn_sent_to_printer";
+    msg["data"]["route"] = route;
+    const bool told = s_post_to_page && s_post_to_page(msg.dump());
+    BOOST_LOG_TRIVIAL(info) << "atn: job sent to a printer (" << route << "), assistant panel "
+                            << (told ? "told" : "not there to tell");
+}
+
 AtnPanel::AtnPanel(wxWindow* parent)
     : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize)
 {
@@ -99,6 +120,17 @@ AtnPanel::AtnPanel(wxWindow* parent)
     SetSizer(sizer);
 
     m_browser->Bind(wxEVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, &AtnPanel::on_script_message, this);
+
+    // Let the free notify functions (AtnNotify.hpp) reach the page for as long as this panel lives:
+    // the weak reference empties itself when the panel is destroyed.
+    wxWeakRef<AtnPanel> self(this);
+    s_post_to_page = [self](const std::string& payload) {
+        AtnPanel* panel = self.get();
+        if (panel == nullptr)
+            return false;
+        panel->send_to_page(payload);
+        return true;
+    };
 
     // Open external links (target="_blank", e.g. the Upgrade / subscribe link) in
     // the user's default browser instead of navigating the panel away from the
@@ -557,6 +589,10 @@ std::string AtnPanel::build_context_json() const
     // Orca base (02.06.00.51) and reads the same for every ATN build, so support could not
     // tell a 2.6.43 install from a 2.7.0 one in a saved slicer-chat case.
     ctx["app"]            = std::string(SLIC3R_APP_NAME) + " " + std::string(SoftFever_VERSION);
+    // What this build reports to the page beyond the baseline, so the page can word itself for the
+    // slicer it is talking to instead of guessing from the version (betas share a version number).
+    //   sent_to_printer: atn_sent_to_printer fires when a job reaches a printer directly.
+    ctx["features"]       = json::array({ "sent_to_printer" });
     ctx["printer_preset"]  = bundle.printers.get_edited_preset().name;
     ctx["print_preset"]    = bundle.prints.get_edited_preset().name;
     ctx["filament_presets"] = bundle.filament_presets;

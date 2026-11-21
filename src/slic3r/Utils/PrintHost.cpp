@@ -39,6 +39,7 @@
 #include "CrealityPrint.hpp"
 #include "../GUI/PrintHostDialogs.hpp"
 #include "../GUI/MainFrame.hpp"
+#include "../GUI/AtnNotify.hpp"
 #include "slic3r/plugin/PluginManager.hpp"
 #include "Obico.hpp"
 #include "Flashforge.hpp"
@@ -508,6 +509,9 @@ void PrintHostJobQueue::priv::perform_job(PrintHostJob the_job)
 
     if (success) {
         emit_progress(100);
+        // ATN: the file is on the printer -> record the job in the assistant's learning diary.
+        // This runs on the queue's worker thread; the panel is told on the GUI thread.
+        GUI::wxGetApp().CallAfter([] { GUI::atn_notify_sent_to_printer("host"); });
         if (the_job.switch_to_device_tab) {
             const auto mainframe = GUI::wxGetApp().mainframe;
             mainframe->request_select_tab(TAB_ID_MONITOR);

@@ -207,6 +207,7 @@
 #include "slic3r/GUI/CAD/DesignPanel.hpp"
 #endif
 #include "AtnPanel.hpp"
+#include "AtnNotify.hpp"
 #include "format.hpp"
 #include "3DScene.hpp"
 #include "GLCanvas3D.hpp"
@@ -21537,6 +21538,10 @@ void Plater::send_calibration_job_finished(wxCommandEvent & evt)
 
 void Plater::print_job_finished(wxCommandEvent &evt)
 {
+    // ATN: only a print job that was sent successfully posts this event (a calibration print posts
+    // its own) -> record the job in the assistant's learning diary.
+    atn_notify_sent_to_printer("bambu");
+
     //start print failed
     if (p) {
 #ifdef __APPLE__
@@ -21569,6 +21574,10 @@ void Plater::print_job_finished(wxCommandEvent &evt)
 
 void Plater::send_job_finished(wxCommandEvent& evt)
 {
+    // ATN: the sliced file is in the printer's storage -> record the job in the assistant's
+    // learning diary, as an upload to any other print host is.
+    atn_notify_sent_to_printer("bambu");
+
     Slic3r::DeviceManager* dev = Slic3r::GUI::wxGetApp().getDeviceManager();
     if (!dev) return;
     //dev->set_selected_machine(evt.GetString().ToStdString());

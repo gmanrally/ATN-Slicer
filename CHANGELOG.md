@@ -14,6 +14,14 @@ How this is used:
 ## Unreleased
 
 ### Added
+- **The print diary records prints sent straight to your printer.** A job the slicer sends to a
+  printer now appears in the assistant's **Learning** tab (Workshop), the same as a job sent to
+  the farm, so you can mark how it turned out. That covers an upload through any print host
+  (Klipper / Moonraker, OctoPrint, PrusaLink, FlashForge, Creality, Elegoo, Qidi and the rest) and
+  a Bambu print or send. It is recorded once the file has arrived, so a failed upload leaves
+  nothing behind. Until now only farm jobs were recorded, so anyone printing directly had nothing
+  to mark. Calibration prints are not recorded, and a file exported to disk or a USB stick is not
+  either: the slicer cannot tell whether it was printed.
 - **Nozzle sizes dialog (H3C, H2C, H2D / X2D).** The in-app selector for mixed nozzle sizes
   that 2.7.0 left "to come": a **Nozzle sizes** button in the filament bar (shown for Bambu
   printers with a hotend rack or two extruders) opens a dialog to switch *Mixed nozzle sizes
