@@ -13,6 +13,8 @@ How this is used:
 
 ## Unreleased
 
+## v2.7.2 — 2026-11-22
+
 ### Added
 - **The print diary records prints sent straight to your printer.** A job the slicer sends to a
   printer now appears in the assistant's **Learning** tab (Workshop), the same as a job sent to
