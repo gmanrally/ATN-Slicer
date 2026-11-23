@@ -13,6 +13,26 @@ How this is used:
 
 ## Unreleased
 
+## v2.7.3 — 2026-11-23
+
+### Fixed
+- **Heat check on Bambu Lab printers (bundled ATN Engine 0.2.11).** A slice made for a Bambu
+  Lab printer (A1, P1, X1, H2D and the rest) came back "thermal analysis unavailable" in the
+  FEA tab and in Pre-flight: the slicer marks layer changes differently for these printers,
+  and the heat check did not recognise the mark. It now reads these files in full, from the
+  first layer to the end of the print.
+- **Heat check with Arc fitting on, every printer.** With Arc fitting on, round walls are
+  written as arc moves, which the heat check skipped: layer times came out short (over a third
+  of the move time on a round part) and the next straight move was measured from the wrong
+  place, so curved parts read hotter than they print. Arc moves are now read like any other
+  move. **Optimise** re-times arc moves too; before, a slowed layer's curved walls kept their
+  original speed.
+
+### Known limits
+- **Optimise is not switched on for Bambu Lab printers yet.** The heat check and its
+  recommendations work; the one-click re-timed file is held back until one has been proven on a
+  Bambu machine. On these printers Optimise returns your file unchanged and says so.
+
 ## v2.7.2 — 2026-11-22
 
 ### Added
