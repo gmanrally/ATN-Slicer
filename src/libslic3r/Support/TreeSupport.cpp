@@ -1640,8 +1640,9 @@ void TreeSupport::generate_toolpaths()
     auto m_support_material_interface_flow = support_material_interface_flow(m_object, float(m_slicing_params.layer_height));
     coordf_t interface_spacing = object_config.support_interface_spacing.value + m_support_material_interface_flow.spacing();
     coordf_t bottom_interface_spacing = object_config.support_bottom_interface_spacing.value + m_support_material_interface_flow.spacing();
+    // ATN: this fixed density is for the raft layers below only; the interface layers above the
+    // raft work theirs out per layer (interface_density_for).
     coordf_t interface_density = std::min(1., m_support_material_interface_flow.spacing() / interface_spacing);
-    coordf_t bottom_interface_density = std::min(1., m_support_material_interface_flow.spacing() / bottom_interface_spacing);
 
     const coordf_t branch_radius = object_config.tree_support_branch_diameter.value / 2;
     const coordf_t branch_radius_scaled = scale_(branch_radius);
@@ -1750,6 +1751,47 @@ void TreeSupport::generate_toolpaths()
         return;
 
     BoundingBox bbox_object(Point(-scale_(1.), -scale_(1.0)), Point(scale_(1.), scale_(1.)));
+    // ATN: the base pattern is laid at ONE pitch on every layer above the bed layer.
+    // It used to take its pitch from each layer's own height (base spacing + that layer's flow
+    // spacing, which is width - 0.2146 x height), and support layers do not share one height: with
+    // independent support layer height every stretch between two contact levels gets a step of
+    // its own (plan_layer_heights), and a variable-height object passes its heights on. The
+    // pattern is laid out from the object's origin (bbox_object above), so where the height
+    // changed, every line moved by its count from the origin times the change in pitch: about a
+    // millimetre at 120 mm out, which lays a layer's lines beside the ones below instead of on
+    // them. Ordinary supports have always used one pitch (SupportCommon.cpp), and this is the same
+    // one: base spacing + the flow spacing at the nominal support layer height. It is built from
+    // the width and nozzle the tree's own lines use; that only differs from
+    // m_support_params.support_spacing for a percent line width with the support and interface
+    // filaments on nozzles of different sizes.
+    // A solid base (base spacing 0) has no gaps for a line to fall into, so it keeps each layer's
+    // own spacing, as it always has, and stays exactly solid. So does a layer whose own flow
+    // spacing is wider than the pitch (a base spacing of a few hundredths of a millimetre on a
+    // layer thinner than the nominal one): laid at the pitch its lines would overlap.
+    const Flow     base_nominal_flow(support_extrusion_width, m_support_params.support_material_flow.height(), nozzle_diameter);
+    const coordf_t base_pitch    = object_config.support_base_pattern_spacing.value + base_nominal_flow.spacing();
+    const bool     base_is_solid = object_config.support_base_pattern_spacing.value < EPSILON;
+    const auto     base_spacing_for = [&](const Flow &flow) -> coordf_t {
+        return base_is_solid ? coordf_t(flow.spacing()) : std::max(base_pitch, coordf_t(flow.spacing()));
+    };
+    // ATN: the same for a sparse interface (roof, first roof layer, floor). With the Rectilinear,
+    // Default or Grid pattern its lines run the same way on every layer and are meant to stack
+    // (Rectilinear Interlaced crosses them on purpose; its pitch is held all the same), but the
+    // filler was given this layer's flow spacing with a density fixed from the nominal height, so
+    // its pitch followed the layer's height too: 0.83 mm on a 0.28 mm layer against 0.91 mm on a
+    // 0.12 mm one at the default 0.5 mm spacing (0.42 mm line, 0.16 mm layer height), which puts
+    // the lines of the layer above between the ones below where the layer height changes inside
+    // the interface. The pitch is now interface_spacing (or bottom_interface_spacing) on every
+    // layer, as in ordinary supports, and the density follows the layer's flow. That pitch is
+    // still the spacing setting + the flow spacing at the slicing layer height (with per-tool
+    // layer heights, the common step of the tools in use). A solid interface (spacing 0) keeps
+    // each layer's own spacing, as before; so does a layer whose own flow spacing is wider than
+    // the pitch (a spacing setting of a few hundredths of a millimetre on a thin layer).
+    const bool     interface_is_solid        = object_config.support_interface_spacing.value < EPSILON;
+    const bool     bottom_interface_is_solid = object_config.support_bottom_interface_spacing.value < EPSILON;
+    const auto     interface_density_for = [](const Flow &flow, coordf_t pitch, bool solid) -> coordf_t {
+        return solid ? coordf_t(1.) : std::min(coordf_t(1.), coordf_t(flow.spacing()) / pitch);
+    };
     // ORCA: base angle used for explicit interlaced interface orientation.
     const float base_support_angle = Geometry::deg2rad(object_config.support_angle.value);
 
@@ -1780,8 +1822,12 @@ void TreeSupport::generate_toolpaths()
                     std::min(ts_layer->height, double(m_support_params.support_material_interface_flow.height())) : ts_layer->height;
                 Flow support_flow(support_extrusion_width, base_height, nozzle_diameter);
                 Flow interface_flow = support_material_interface_flow(m_object, float(interface_height));
-                coordf_t support_spacing         = object_config.support_base_pattern_spacing.value + support_flow.spacing();
+                // ATN: one pitch on every layer (base_pitch above); only the density follows this
+                // layer's flow, so the lines keep their places. Their width is the same on every layer.
+                coordf_t support_spacing         = base_spacing_for(support_flow);
                 coordf_t support_density         = std::min(1., support_flow.spacing() / support_spacing);
+                coordf_t layer_interface_density        = interface_density_for(interface_flow, interface_spacing, interface_is_solid);
+                coordf_t layer_bottom_interface_density = interface_density_for(interface_flow, bottom_interface_spacing, bottom_interface_is_solid);
                 ts_layer->support_fills.no_sort = false;
                 // ORCA: per-layer Fill instances to avoid shared-state races during interlaced interfaces.
                 std::shared_ptr<Fill> filler_interface = std::shared_ptr<Fill>(Fill::new_from_type(m_support_params.contact_fill_pattern));
@@ -1794,10 +1840,12 @@ void TreeSupport::generate_toolpaths()
                         const float height = float(area_group.extrusion_height);
                         if (area_group.type == SupportLayer::BaseType || area_group.interface_as_base) {
                             support_flow = support_flow.with_height(height);
-                            support_spacing = object_config.support_base_pattern_spacing.value + support_flow.spacing();
+                            support_spacing = base_spacing_for(support_flow);
                             support_density = std::min(1., support_flow.spacing() / support_spacing);
                         } else {
                             interface_flow = interface_flow.with_height(height);
+                            layer_interface_density        = interface_density_for(interface_flow, interface_spacing, interface_is_solid);
+                            layer_bottom_interface_density = interface_density_for(interface_flow, bottom_interface_spacing, bottom_interface_is_solid);
                         }
                     }
                     ExPolygon& poly = *area_group.area;
@@ -1824,14 +1872,14 @@ void TreeSupport::generate_toolpaths()
                         else {
                             polys.push_back(poly);
                         }
-                        fill_params.density = interface_density;
+                        fill_params.density = layer_interface_density;
                         fill_params.dont_adjust = true;
                     }
                     if (area_group.type == SupportLayer::Roof1stLayer) {
                         // roof_1st_layer
                         // ORCA: Roof1stLayer may be printed with base material when it acts as a contact layer.
                         bool interface_as_base = area_group.interface_as_base;
-                        fill_params.density = interface_density;
+                        fill_params.density = layer_interface_density;
                         // Note: spacing means the separation between two lines as if they are tightly extruded
                         filler_Roof1stLayer->spacing = interface_flow.spacing();
                         filler_Roof1stLayer->angle = m_support_params.support_interface_angle(area_group.interface_id);
@@ -1846,7 +1894,7 @@ void TreeSupport::generate_toolpaths()
                         // generate a perimeter first to support interface better
                         ExtrusionEntityCollection* temp_support_fills = new ExtrusionEntityCollection();
                         make_perimeter_and_infill(temp_support_fills->entities, poly, 1, interface_base_flow, interface_role,
-                            filler_Roof1stLayer.get(), interface_density, false);
+                            filler_Roof1stLayer.get(), layer_interface_density, false);
                         temp_support_fills->no_sort = true; // make sure loops are first
                         if (!temp_support_fills->entities.empty())
                             ts_layer->support_fills.entities.push_back(temp_support_fills);
@@ -1855,7 +1903,7 @@ void TreeSupport::generate_toolpaths()
                     } else if (area_group.type == SupportLayer::FloorType) {
                         // floor_areas
                         bool interface_as_base = area_group.interface_as_base;
-                        fill_params.density = bottom_interface_density;
+                        fill_params.density = layer_bottom_interface_density;
                         filler_interface->spacing = interface_flow.spacing();
 
                         fill_params.dont_sort = (m_object_config->support_interface_pattern == smipGrid ||
@@ -1871,7 +1919,7 @@ void TreeSupport::generate_toolpaths()
                     } else if (area_group.type == SupportLayer::RoofType) {
                         // roof_areas
                         bool interface_as_base = area_group.interface_as_base;
-                        fill_params.density       = interface_density;
+                        fill_params.density       = layer_interface_density;
                         filler_interface->spacing = interface_flow.spacing();
 
                         fill_params.dont_sort = (m_object_config->support_interface_pattern == smipGrid ||

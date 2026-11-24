@@ -13,6 +13,33 @@ How this is used:
 
 ## Unreleased
 
+### Fixed
+- **Tree supports: the base pattern stays in line all the way up.** With tree supports (Slim,
+  Strong or Hybrid) and a Rectilinear, Rectilinear grid or Honeycomb base (or Hybrid's Default
+  base, which is rectilinear), the pattern's line spacing followed each support layer's own
+  height. Support layers do not all share one height: with **Independent support layer
+  height** on, each stretch between two overhang levels gets its own, and with it off a
+  variable-layer-height part passes its heights on. At every change the lines moved sideways,
+  more the further they were from the middle of the part, so a layer's lines could land
+  beside the ones below instead of on them and the support could fail there. On an 80 mm test
+  part up to a quarter of a honeycomb base had less than half a line under it at the change.
+  The pattern now keeps one spacing on every layer above the dense first layer on the plate,
+  as Normal supports always have.
+- **Tree supports: interface lines stack too.** The interface (the closer lines just under the
+  part, and on top of it where a support stands on the part) had the same fault. Where the
+  layer height changed inside the interface, the lines above sat between the ones below: on a
+  test part three quarters of them were more than 0.1 mm off, 0.4 mm at worst. They now keep
+  one spacing on every layer, whichever interface pattern is chosen, and on a printer with
+  mixed nozzle sizes where the base and the interface print at different layer heights.
+
+### Changed
+- **Tree support spacing no longer follows the layer height**, so the amount of support
+  plastic moves a little. Where support layers are taller than the part's layer height, the
+  interface comes out about 5% more open than before (it used to run tighter than the gap you
+  set), and a little tighter where they are thinner. The lines of a base at 2.5 mm spacing
+  sit under 1% further apart, and the plastic it uses hardly changes. A solid interface or a
+  solid base (spacing 0), Normal supports and Organic tree supports print exactly as before.
+
 ## v2.7.3 — 2026-11-23
 
 ### Fixed
