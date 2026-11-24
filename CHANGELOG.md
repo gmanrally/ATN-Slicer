@@ -13,6 +13,8 @@ How this is used:
 
 ## Unreleased
 
+## v2.7.4 — 2026-11-24
+
 ### Fixed
 - **Tree supports: the base pattern stays in line all the way up.** With tree supports (Slim,
   Strong or Hybrid) and a Rectilinear, Rectilinear grid or Honeycomb base (or Hybrid's Default
