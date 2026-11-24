@@ -37,10 +37,12 @@ How this is used:
 ### Changed
 - **Tree support spacing no longer follows the layer height**, so the amount of support
   plastic moves a little. Where support layers are taller than the part's layer height, the
-  interface comes out about 5% more open than before (it used to run tighter than the gap you
-  set), and a little tighter where they are thinner. The lines of a base at 2.5 mm spacing
-  sit under 1% further apart, and the plastic it uses hardly changes. A solid interface or a
-  solid base (spacing 0), Normal supports and Organic tree supports print exactly as before.
+  interface lines sit a little further apart than before (it used to run tighter than the gap
+  you set): about 5% less interface plastic on a test part at 0.16 mm layers, more with finer
+  layers. Where they are thinner the lines sit a little closer. The lines of a base at 2.5 mm
+  spacing move by about 1% (further apart on taller support layers, closer on thinner ones),
+  and the plastic it uses hardly changes. A solid interface or a solid base (spacing 0),
+  Normal supports and Organic tree supports print exactly as before.
 
 ## v2.7.3 — 2026-11-23
 

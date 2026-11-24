@@ -1765,9 +1765,10 @@ void TreeSupport::generate_toolpaths()
     // m_support_params.support_spacing for a percent line width with the support and interface
     // filaments on nozzles of different sizes.
     // A solid base (base spacing 0) has no gaps for a line to fall into, so it keeps each layer's
-    // own spacing, as it always has, and stays exactly solid. So does a layer whose own flow
-    // spacing is wider than the pitch (a base spacing of a few hundredths of a millimetre on a
-    // layer thinner than the nominal one): laid at the pitch its lines would overlap.
+    // own spacing, as it always has, and stays exactly solid. A layer whose own flow spacing is
+    // wider than the pitch (a base spacing of a few hundredths of a millimetre on a layer thinner
+    // than the nominal one) is laid solid at its own flow spacing as well, where it used to keep
+    // the configured gap: laid at the pitch its lines would overlap.
     const Flow     base_nominal_flow(support_extrusion_width, m_support_params.support_material_flow.height(), nozzle_diameter);
     const coordf_t base_pitch    = object_config.support_base_pattern_spacing.value + base_nominal_flow.spacing();
     const bool     base_is_solid = object_config.support_base_pattern_spacing.value < EPSILON;
@@ -1785,8 +1786,9 @@ void TreeSupport::generate_toolpaths()
     // layer, as in ordinary supports, and the density follows the layer's flow. That pitch is
     // still the spacing setting + the flow spacing at the slicing layer height (with per-tool
     // layer heights, the common step of the tools in use). A solid interface (spacing 0) keeps
-    // each layer's own spacing, as before; so does a layer whose own flow spacing is wider than
-    // the pitch (a spacing setting of a few hundredths of a millimetre on a thin layer).
+    // each layer's own spacing, as before. A layer whose own flow spacing is wider than the pitch
+    // (a spacing setting of a few hundredths of a millimetre on a thin layer) is laid solid at
+    // its own spacing, where it used to keep the configured gap.
     const bool     interface_is_solid        = object_config.support_interface_spacing.value < EPSILON;
     const bool     bottom_interface_is_solid = object_config.support_bottom_interface_spacing.value < EPSILON;
     const auto     interface_density_for = [](const Flow &flow, coordf_t pitch, bool solid) -> coordf_t {
